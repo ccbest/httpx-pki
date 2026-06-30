@@ -65,6 +65,13 @@ def _context_from_material(
 
 def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
     if isinstance(verify, ssl.SSLContext):
+        warnings.warn(
+            "verify= was given a pre-built ssl.SSLContext; httpx-pki loads the "
+            "client certificate into it in place. Do not share this context with "
+            "other clients -- use verify=True or a CA-bundle path (letting "
+            "httpx-pki build a dedicated context) if it must stay cert-free.",
+            stacklevel=3,
+        )
         return verify
     if verify is True:
         return ssl.create_default_context(cafile=certifi.where())

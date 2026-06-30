@@ -141,3 +141,55 @@ def test_from_windows_cert_store_not_found_mocked(
     monkeypatch.setattr(winstore.sys, "platform", "win32")
     with pytest.raises(CertificateNotFoundError):
         PKCSession.from_windows_cert_store(name="nope")
+
+
+class _FakeCrypt32:
+    def __init__(self) -> None:
+        self.freed: list[object] = []
+
+    def CertFreeCertificateContext(self, handle: object) -> None:  # noqa: N802
+        self.freed.append(handle)
+
+
+def test_unchosen_contexts_are_freed(
+    monkeypatch: pytest.MonkeyPatch, client_p12: bytes
+) -> None:
+    # Only the non-chosen enumerated context is freed here; the chosen one is
+    # released inside _export_pfx (mocked away), so it must not appear.
+    fake = _FakeCrypt32()
+    chosen = WinCert("ACME Prod", "prod", "AA", handle=1)
+    other = WinCert("ACME Dev", "dev", "BB", handle=2)
+    monkeypatch.setattr(
+        winstore, "_enumerate_store", lambda store, location: [chosen, other]
+    )
+    monkeypatch.setattr(winstore, "_load_crypt32", lambda: fake)
+    monkeypatch.setattr(winstore, "_export_pfx", lambda cert: (client_p12, b"secret"))
+    monkeypatch.setattr(winstore.sys, "platform", "win32")
+
+    load_windows_pkcs12(thumbprint="AA")
+    assert fake.freed == [2]
+
+
+def test_all_contexts_freed_on_selection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # When selection fails, every duplicated context must be released.
+    fake = _FakeCrypt32()
+    a = WinCert("ACME Prod", "prod", "AA", handle=1)
+    b = WinCert("ACME Dev", "dev", "BB", handle=2)
+    monkeypatch.setattr(winstore, "_enumerate_store", lambda store, location: [a, b])
+    monkeypatch.setattr(winstore, "_load_crypt32", lambda: fake)
+    monkeypatch.setattr(winstore.sys, "platform", "win32")
+
+    with pytest.raises(AmbiguousCertificateError):
+        load_windows_pkcs12(name="acme")
+    assert sorted(fake.freed) == [1, 2]
+
+
+def test_free_contexts_skips_handleless(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Handle-less stand-ins must not trigger a crypt32 load (which faults off-Win).
+    def boom() -> object:
+        raise AssertionError("crypt32 must not load when there is nothing to free")
+
+    monkeypatch.setattr(winstore, "_load_crypt32", boom)
+    winstore._free_contexts([WinCert("a", None, "AA")])  # handle defaults to None

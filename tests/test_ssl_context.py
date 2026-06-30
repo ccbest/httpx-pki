@@ -5,6 +5,7 @@ from __future__ import annotations
 import ssl
 
 import httpx
+import pytest
 
 from httpx_pki import build_ssl_context
 from tests.conftest import P12_PASSWORD
@@ -13,6 +14,15 @@ from tests.conftest import P12_PASSWORD
 def test_build_ssl_context_returns_context(client_p12: bytes) -> None:
     ctx = build_ssl_context(client_p12, password=P12_PASSWORD)
     assert isinstance(ctx, ssl.SSLContext)
+
+
+def test_passed_context_is_mutated_in_place_with_warning(client_p12: bytes) -> None:
+    # A caller-supplied context is reused as-is and gets the client cert loaded
+    # into it; we warn so a shared context is not surprising.
+    ctx = ssl.create_default_context()
+    with pytest.warns(UserWarning, match="pre-built ssl.SSLContext"):
+        out = build_ssl_context(client_p12, password=P12_PASSWORD, verify=ctx)
+    assert out is ctx
 
 
 def test_build_ssl_context_autodetects_pem(client_p12: bytes) -> None:

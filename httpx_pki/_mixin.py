@@ -29,6 +29,10 @@ class _PKIMixin:
     _material: Material
     _verify_policy: VerifyTypes
     _httpx_kwargs: dict[str, Any]
+    # Parsed once from _material.cert_pem in _apply_material. Parsing is pure, so
+    # caching it is invisible (the time-dependent checks recompute "now"
+    # separately) and spares every cn/dn/validity access a fresh PEM parse.
+    _certinfo: CertInfo
 
     def _httpx_init(self, *, verify: ssl.SSLContext, **kwargs: Any) -> None:
         """Forward to the concrete httpx base class. Overridden per client."""
@@ -42,9 +46,18 @@ class _PKIMixin:
         warn_if_expires_within: datetime.timedelta | None = None,
         **kwargs: Any,
     ) -> None:
+        if "cert" in kwargs:
+            raise TypeError(
+                "pass the client certificate to the constructor's cert source, "
+                "not via httpx's cert= keyword: httpx deprecated cert= in 0.28, "
+                "and it would collide with the SSL context httpx-pki mounts on "
+                "verify=."
+            )
         self._material = material
         self._verify_policy = verify
         self._httpx_kwargs = kwargs
+        self._certinfo = cert_info(material.cert_pem)
+        self._warn_on_ignored_tls(kwargs)
         self._warn_on_validity(warn_if_expires_within)
         context = _context_from_material(material, verify)
         self._httpx_init(verify=context, **kwargs)
@@ -77,12 +90,12 @@ class _PKIMixin:
     @property
     def not_valid_before(self) -> datetime.datetime:
         """Start of the client certificate's validity window (UTC)."""
-        return cert_info(self._material.cert_pem).not_before
+        return self._certinfo.not_before
 
     @property
     def not_valid_after(self) -> datetime.datetime:
         """End of the client certificate's validity window (UTC)."""
-        return cert_info(self._material.cert_pem).not_after
+        return self._certinfo.not_after
 
     @property
     def is_expired(self) -> bool:
@@ -110,7 +123,7 @@ class _PKIMixin:
         ``CertificateExpiredError`` when the certificate will expire inside that
         window -- a one-call preflight for "is this good for the next N days?".
         """
-        info = cert_info(self._material.cert_pem)
+        info = self._certinfo
         now = _utcnow()
         not_before = f"{info.not_before:%Y-%m-%d %H:%M UTC}"
         not_after = f"{info.not_after:%Y-%m-%d %H:%M UTC}"
@@ -127,10 +140,28 @@ class _PKIMixin:
                 f"client certificate expires on {not_after}, within {within}"
             )
 
+    def _warn_on_ignored_tls(self, kwargs: dict[str, Any]) -> None:
+        """Warn that a custom transport makes httpx ignore the client cert.
+
+        When ``transport=`` or ``mounts=`` is supplied, httpx uses that transport
+        as-is and never consults the client-level ``verify=`` we mount the
+        certificate on -- so the cert is silently dropped and the mTLS handshake
+        fails far from here. The fix is to put the SSL context on the inner
+        transport (see :func:`~httpx_pki.build_ssl_context`), not the client.
+        """
+        if kwargs.get("transport") is not None or kwargs.get("mounts"):
+            warnings.warn(
+                "a custom transport=/mounts= makes httpx ignore verify=, so the "
+                "client certificate is NOT mounted on this session. Build the "
+                "context with build_ssl_context() and put it on the inner "
+                "transport instead, e.g. httpx.HTTPTransport(verify=ctx).",
+                stacklevel=3,
+            )
+
     def _warn_on_validity(
         self, warn_if_expires_within: datetime.timedelta | None
     ) -> None:
-        info = cert_info(self._material.cert_pem)
+        info = self._certinfo
         now = _utcnow()
         if now > info.not_after:
             warnings.warn(
@@ -157,17 +188,17 @@ class _PKIMixin:
 
     def cert_info(self) -> CertInfo:
         """Return subject, validity window, and SANs of the client certificate."""
-        return cert_info(self._material.cert_pem)
+        return self._certinfo
 
     @property
     def cn(self) -> str | None:
         """The client certificate's subject Common Name (``None`` if absent)."""
-        return cert_info(self._material.cert_pem).common_name
+        return self._certinfo.common_name
 
     @property
     def dn(self) -> str:
         """The client certificate's full subject Distinguished Name (RFC 4514)."""
-        return cert_info(self._material.cert_pem).distinguished_name
+        return self._certinfo.distinguished_name
 
     # -- pickling -----------------------------------------------------------
     #
@@ -199,7 +230,7 @@ class _PKIMixin:
         )
 
     def __repr__(self) -> str:
-        info = cert_info(self._material.cert_pem)
+        info = self._certinfo
         return (
             f"<{type(self).__name__} "
             f"cn={info.common_name!r} "

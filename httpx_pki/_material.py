@@ -184,6 +184,19 @@ def _load_certificate(data: bytes) -> x509.Certificate:
             raise CertificateLoadError("could not parse certificate") from exc
 
 
+def _load_certificates(data: bytes) -> list[x509.Certificate]:
+    """Load every certificate in *data* (PEM may hold several; DER holds one)."""
+    if b"-----BEGIN" in data:
+        try:
+            certs = x509.load_pem_x509_certificates(data)
+        except ValueError as exc:
+            raise CertificateLoadError("could not parse certificate(s)") from exc
+        if not certs:
+            raise CertificateLoadError("no certificate found")
+        return certs
+    return [_load_certificate(data)]
+
+
 def _load_private_key(
     data: bytes, password: bytes | None
 ) -> PrivateKeyTypes:
@@ -202,31 +215,35 @@ def normalize_pem(
     certificate: CertSource,
     private_key: CertSource,
     key_password: Password = None,
-    ca: CertSource | list[CertSource] | None = None,
+    chain: CertSource | list[CertSource] | None = None,
 ) -> Material:
-    """Build canonical material from a separate certificate and private key."""
-    cert = _load_certificate(read_source(certificate))
-    key = _load_private_key(read_source(private_key), encode_password(key_password))
-    _verify_key_matches_cert(key, cert)
+    """Build canonical material from a separate certificate and private key.
 
-    ca_sources: list[CertSource]
-    if ca is None:
-        ca_sources = []
-    elif isinstance(ca, list):
-        ca_sources = ca
+    *certificate* is the client (leaf) certificate. *chain* carries any
+    intermediate certificates to present to the server: a single source (which
+    may itself concatenate several PEM certs) or a list of sources.
+    """
+    leaf = _load_certificate(read_source(certificate))
+    key = _load_private_key(read_source(private_key), encode_password(key_password))
+    _verify_key_matches_cert(key, leaf)
+
+    if chain is None:
+        chain_sources: list[CertSource] = []
+    elif isinstance(chain, list):
+        chain_sources = chain
     else:
-        ca_sources = [ca]
+        chain_sources = [chain]
+    intermediates: list[x509.Certificate] = []
+    for source in chain_sources:
+        intermediates.extend(_load_certificates(read_source(source)))
 
     key_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-    ca_pems = [
-        _load_certificate(read_source(c)).public_bytes(serialization.Encoding.PEM)
-        for c in ca_sources
-    ]
+    cert_pem = leaf.public_bytes(serialization.Encoding.PEM)
+    ca_pems = [c.public_bytes(serialization.Encoding.PEM) for c in intermediates]
     return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
 
 

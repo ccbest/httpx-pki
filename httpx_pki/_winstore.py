@@ -125,10 +125,33 @@ def load_windows_pkcs12(
             "the Windows certificate store is only available on Windows"
         )
     candidates = _enumerate_store(store, location)
-    chosen = select_certificate(
-        candidates, name=name, thumbprint=thumbprint, predicate=predicate
-    )
-    return _export_pfx(chosen)
+    keep: WinCert | None = None
+    try:
+        keep = select_certificate(
+            candidates, name=name, thumbprint=thumbprint, predicate=predicate
+        )
+        return _export_pfx(keep)
+    finally:
+        # _enumerate_store duplicates every context so the handles outlive the
+        # enumeration cursor; free the ones we are not exporting (_export_pfx
+        # frees the chosen one). On a selection error keep is None, so every
+        # duplicated context is released here instead of leaking.
+        _free_contexts([c for c in candidates if c is not keep])
+
+
+def _free_contexts(certs: list[WinCert]) -> None:
+    """Release duplicated certificate contexts.
+
+    Handle-less candidates (the synthetic stand-ins used in tests) are skipped,
+    and ``crypt32`` is only loaded when there is a real handle to free -- so this
+    is a no-op, and safe, off Windows.
+    """
+    live = [c.handle for c in certs if c.handle is not None]
+    if not live:
+        return
+    crypt32 = _load_crypt32()
+    for handle in live:
+        crypt32.CertFreeCertificateContext(handle)
 
 
 # ---------------------------------------------------------------------------

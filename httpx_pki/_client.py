@@ -113,12 +113,17 @@ class PKCSession(_PKIMixin, httpx.Client):
         private_key: CertSource,
         *,
         key_password: Password = None,
-        ca: CertSource | list[CertSource] | None = None,
+        chain: CertSource | list[CertSource] | None = None,
         verify: VerifyTypes = True,
         **kwargs: Any,
     ) -> PKCSession:
-        """Build a session from a separate certificate and private key."""
-        material = normalize_pem(certificate, private_key, key_password, ca)
+        """Build a session from a separate certificate and private key.
+
+        *certificate* is the client (leaf) certificate. Pass *chain* to present
+        intermediate certificates to the server: a single source (which may
+        concatenate several PEM certs) or a list of sources.
+        """
+        material = normalize_pem(certificate, private_key, key_password, chain)
         return cls._from_material(material, verify=verify, **kwargs)
 
     @classmethod
@@ -234,12 +239,16 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
         private_key: CertSource,
         *,
         key_password: Password = None,
-        ca: CertSource | list[CertSource] | None = None,
+        chain: CertSource | list[CertSource] | None = None,
         verify: VerifyTypes = True,
         **kwargs: Any,
     ) -> AsyncPKCSession:
-        """Build a session from a separate certificate and private key."""
-        material = normalize_pem(certificate, private_key, key_password, ca)
+        """Build a session from a separate certificate and private key.
+
+        See :meth:`PKCSession.from_key_pair`; pass *chain* to present
+        intermediate certificates to the server.
+        """
+        material = normalize_pem(certificate, private_key, key_password, chain)
         return cls._from_material(material, verify=verify, **kwargs)
 
     @classmethod

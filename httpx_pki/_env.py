@@ -40,7 +40,7 @@ def resolve_env_material(prefix: str) -> tuple[Material, VerifyTypes]:
     ca = os.environ.get(f"{prefix}CA")
 
     if key:
-        material = normalize_pem(cert, key, password, None)
+        material = normalize_pem(cert, key, password)
     else:
         material = load_material(read_source(cert), encode_password(password))
 

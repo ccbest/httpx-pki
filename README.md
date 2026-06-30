@@ -17,6 +17,12 @@ Unlike helper-function approaches, the session is a real, **subclassable** class
 it works as a context manager, and it is **picklable** so you can hand a
 preconfigured session across process boundaries.
 
+#### Purpose
+
+httpx deprecated its `cert=` argument in 0.28 in favor of building an
+`ssl.SSLContext` yourself — which stdlib `ssl` can't do from PKCS#12 or in-memory
+bytes. `httpx-pki` is that missing piece.
+
 ## Install
 
 ```bash
@@ -36,7 +42,7 @@ extension never matters:
 | --- | --- | --- |
 | **PKCS#12** (`.p12`, `.pfx`, binary) | `PKCSession(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob |
 | **PEM bundle** (key + cert(s) in one file) | `PKCSession(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys |
-| **Separate cert + key** (PEM *or* DER) | `from_key_pair(...)` | optional `ca=` chain |
+| **Separate cert + key** (PEM *or* DER) | `from_key_pair(...)` | optional `chain=` intermediates |
 | **Windows cert store** | `from_windows_cert_store(...)` | Windows only; see below |
 
 `PKCSession(source, password=...)` auto-detects PKCS#12 vs PEM, so you can point
@@ -77,7 +83,8 @@ client = PKCSession.from_key_pair(
     certificate="client.crt",
     private_key="client.key",
     key_password="secret",      # if the key is encrypted
-    ca="intermediate.crt",      # optional: one path/bytes or a list
+    chain="intermediate.crt",   # optional: intermediates to present; one
+                                # path/bytes (may concatenate several) or a list
 )
 ```
 
@@ -160,6 +167,12 @@ independent. `verify` behaves just like httpx — `True` (default, uses certifi)
 ```python
 PKCSession("client.p12", verify="/etc/ssl/custom-ca.pem")
 ```
+
+> **Passing your own `ssl.SSLContext`?** `httpx-pki` loads the client certificate
+> into that exact object (it can't be copied), so don't reuse a shared context
+> across clients — each load would overwrite the previous cert. You'll get a
+> warning. Pass `verify=True` or a CA-bundle path to let `httpx-pki` build a
+> dedicated context instead.
 
 ### Subclassing
 

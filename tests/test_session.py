@@ -40,11 +40,38 @@ def test_from_key_pair(client: Signed, ca: Signed) -> None:
     with PKCSession.from_key_pair(
         certificate=client.cert_pem,
         private_key=client.key_pem,
-        ca=ca.cert_pem,
     ) as session:
         info = session.cert_info()
         assert info.common_name == CLIENT_CN
         assert "test-client.example.com" in info.subject_alt_names
+
+
+def test_from_key_pair_with_chain(client: Signed, ca: Signed) -> None:
+    # chain= takes one source or a list; both produce the same ca_pems.
+    with PKCSession.from_key_pair(
+        certificate=client.cert_pem,
+        private_key=client.key_pem,
+        chain=ca.cert_pem,
+    ) as session:
+        assert session.cn == CLIENT_CN
+        assert session._material.ca_pems == [ca.cert_pem]
+    with PKCSession.from_key_pair(
+        certificate=client.cert_pem,
+        private_key=client.key_pem,
+        chain=[ca.cert_pem],
+    ) as session:
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_from_key_pair_chain_multi_cert_blob(client: Signed, ca: Signed) -> None:
+    # A single chain source holding several PEM certs splits into each cert.
+    blob = ca.cert_pem + client.cert_pem
+    with PKCSession.from_key_pair(
+        certificate=client.cert_pem,
+        private_key=client.key_pem,
+        chain=blob,
+    ) as session:
+        assert session._material.ca_pems == [ca.cert_pem, client.cert_pem]
 
 
 def test_wrong_password_raises(client_p12: bytes) -> None:
@@ -141,15 +168,54 @@ def test_subclassing(client_p12: bytes) -> None:
         assert session.cert_info().common_name == CLIENT_CN
 
 
+def test_cert_kwarg_rejected(client: Signed) -> None:
+    # httpx's deprecated cert= must not slip through **kwargs and collide with
+    # the SSL context we mount on verify=.
+    with pytest.raises(TypeError, match="cert="):
+        PKCSession.from_key_pair(
+            certificate=client.cert_pem,
+            private_key=client.key_pem,
+            cert="ignored.pem",
+        )
+
+
 def test_verify_false_warns(client_p12: bytes) -> None:
     with pytest.warns(UserWarning, match="verify=False"):
         session = PKCSession(client_p12, password=P12_PASSWORD, verify=False)
     session.close()
 
 
+def test_custom_transport_warns(client_p12: bytes) -> None:
+    with pytest.warns(UserWarning, match="custom transport=/mounts="):
+        session = PKCSession(
+            client_p12, password=P12_PASSWORD, transport=httpx.HTTPTransport()
+        )
+    session.close()
+
+
+def test_custom_mounts_warns(client_p12: bytes) -> None:
+    with pytest.warns(UserWarning, match="custom transport=/mounts="):
+        session = PKCSession(
+            client_p12,
+            password=P12_PASSWORD,
+            mounts={"https://": httpx.HTTPTransport()},
+        )
+    session.close()
+
+
+def test_no_transport_does_not_warn(client_p12: bytes) -> None:
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        session = PKCSession(client_p12, password=P12_PASSWORD)
+    session.close()
+
+
 def test_verify_custom_context_not_pickled(client_p12: bytes) -> None:
     ctx = ssl.create_default_context()
-    session = PKCSession(client_p12, password=P12_PASSWORD, verify=ctx)
+    with pytest.warns(UserWarning, match="pre-built ssl.SSLContext"):
+        session = PKCSession(client_p12, password=P12_PASSWORD, verify=ctx)
     try:
         with pytest.warns(UserWarning, match="custom ssl.SSLContext"):
             pickle.dumps(session)
