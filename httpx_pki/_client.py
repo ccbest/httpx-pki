@@ -41,7 +41,7 @@ class PKCSession(_PKIMixin, httpx.Client):
     :class:`httpx.Client` (``base_url``, ``headers``, ``timeout``, ``http2`` ...).
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=W0231
         self,
         cert: CertSource,
         password: Password = None,
@@ -122,7 +122,7 @@ class PKCSession(_PKIMixin, httpx.Client):
         return cls._from_material(material, verify=verify, **kwargs)
 
     @classmethod
-    def from_windows_cert_store(
+    def from_windows_cert_store(  # pylint: disable=too-many-arguments
         cls,
         name: str | None = None,
         *,
@@ -167,7 +167,7 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
             await client.get("https://mtls.example.com/")
     """
 
-    def __init__(
+    def __init__(  # pylint: disable=W0231
         self,
         cert: CertSource,
         password: Password = None,
@@ -243,7 +243,7 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
         return cls._from_material(material, verify=verify, **kwargs)
 
     @classmethod
-    def from_windows_cert_store(
+    def from_windows_cert_store(  # pylint: disable=too-many-arguments
         cls,
         name: str | None = None,
         *,

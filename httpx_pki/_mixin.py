@@ -160,12 +160,12 @@ class _PKIMixin:
         return cert_info(self._material.cert_pem)
 
     @property
-    def CN(self) -> str | None:
+    def cn(self) -> str | None:
         """The client certificate's subject Common Name (``None`` if absent)."""
         return cert_info(self._material.cert_pem).common_name
 
     @property
-    def DN(self) -> str:
+    def dn(self) -> str:
         """The client certificate's full subject Distinguished Name (RFC 4514)."""
         return cert_info(self._material.cert_pem).distinguished_name
 

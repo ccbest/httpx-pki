@@ -1,3 +1,4 @@
+# pylint: disable=invalid-name, too-many-locals
 """Retrieve an exportable client certificate from the Windows certificate store.
 
 Everything Windows-specific (``ctypes`` against ``crypt32.dll``) lives inside
@@ -300,6 +301,7 @@ def _thumbprint(
 
 
 def _export_pfx(cert: WinCert) -> tuple[bytes, bytes]:  # pragma: no cover
+    # pylint: disable=attribute-defined-outside-init,missing-class-docstring,too-few-public-methods
     if sys.platform != "win32":
         raise UnsupportedPlatformError(
             "the Windows certificate store is only available on Windows"

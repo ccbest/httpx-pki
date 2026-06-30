@@ -24,14 +24,14 @@ def test_pem_bundle_autodetected(client: Signed, ca: Signed) -> None:
 
 def test_from_pem_explicit(client: Signed, ca: Signed) -> None:
     with PKCSession.from_pem(_pem_bundle(client, ca)) as session:
-        assert session.CN == CLIENT_CN
+        assert session.cn == CLIENT_CN
 
 
 def test_pem_bundle_order_independent(client: Signed, ca: Signed) -> None:
     # cert before key should parse the same.
     blob = client.cert_pem + ca.cert_pem + client.key_pem
     with PKCSession.from_pem(blob) as session:
-        assert session.CN == CLIENT_CN
+        assert session.cn == CLIENT_CN
 
 
 def test_encrypted_pem_key_with_password(client: Signed, ca: Signed) -> None:
@@ -42,7 +42,7 @@ def test_encrypted_pem_key_with_password(client: Signed, ca: Signed) -> None:
     )
     blob = encrypted_key + client.cert_pem
     with PKCSession.from_pem(blob, password="keypw") as session:
-        assert session.CN == CLIENT_CN
+        assert session.cn == CLIENT_CN
 
 
 def test_pem_without_key_raises(client: Signed) -> None:
@@ -58,7 +58,7 @@ def test_pem_without_cert_raises(client: Signed) -> None:
 def test_pkcs12_still_autodetected(client_p12: bytes) -> None:
     # Binary input is routed to the PKCS#12 path.
     with PKCSession(client_p12, password=P12_PASSWORD) as session:
-        assert session.CN == CLIENT_CN
+        assert session.cn == CLIENT_CN
 
 
 def test_pem_path_input_nonstandard_extension(
@@ -67,4 +67,4 @@ def test_pem_path_input_nonstandard_extension(
     pem_file = tmp_path / "client.tls"  # extension is ignored; content wins
     pem_file.write_bytes(_pem_bundle(client, ca))
     with PKCSession(pem_file) as session:
-        assert session.CN == CLIENT_CN
+        assert session.cn == CLIENT_CN

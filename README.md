@@ -294,9 +294,9 @@ ca = make_ca()
 bundle = make_client_cert("svc-client", ca=ca, dns_names=["svc.internal"])
 
 with PKCSession(bundle.pkcs12(), password=b"") as client:
-    assert client.CN == "svc-client"
+  assert client.cn == "svc-client"
 
-expired = make_client_cert("old", ca=ca, expired=True)   # for expiry tests
+expired = make_client_cert("old", ca=ca, expired=True)  # for expiry tests
 ```
 
 ## ⚠️ Security note on pickling

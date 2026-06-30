@@ -14,7 +14,7 @@ def test_self_signed_client_cert_loads() -> None:
     assert bundle.common_name == "solo"
     assert bundle.ca_pem == b""
     with PKCSession(bundle.pkcs12()) as session:
-        assert session.CN == "solo"
+        assert session.cn == "solo"
 
 
 def test_ca_signed_with_sans() -> None:
@@ -34,7 +34,7 @@ def test_ca_signed_with_sans() -> None:
 def test_pkcs12_password_round_trip() -> None:
     bundle = make_client_cert("x", ca=make_ca())
     with PKCSession(bundle.pkcs12("hunter2"), password="hunter2") as session:
-        assert session.CN == "x"
+        assert session.cn == "x"
 
 
 def test_expired_bundle_window_is_in_the_past() -> None:

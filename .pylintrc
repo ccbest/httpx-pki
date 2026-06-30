@@ -1,0 +1,2 @@
+[MESSAGES CONTROL]
+disable = import-outside-toplevel, duplicate-code

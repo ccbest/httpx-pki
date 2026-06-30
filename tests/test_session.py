@@ -97,8 +97,8 @@ def test_cert_info_fields(client_p12: bytes) -> None:
 
 def test_cn_and_dn_properties(client_p12: bytes) -> None:
     with PKCSession(client_p12, password=P12_PASSWORD) as session:
-        assert session.CN == CLIENT_CN
-        assert session.DN == f"CN={CLIENT_CN}"
+        assert session.cn == CLIENT_CN
+        assert session.dn == f"CN={CLIENT_CN}"
 
 
 def test_pickle_round_trip(client_p12: bytes) -> None:

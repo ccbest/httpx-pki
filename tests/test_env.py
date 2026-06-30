@@ -17,7 +17,7 @@ def test_from_env_pkcs12(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("HTTPX_PKI_CERT", str(p12))
     monkeypatch.setenv("HTTPX_PKI_PASSWORD", "pw")
     with PKCSession.from_env() as session:
-        assert session.CN == "envclient"
+        assert session.cn == "envclient"
 
 
 def test_from_env_separate_key(
@@ -31,7 +31,7 @@ def test_from_env_separate_key(
     monkeypatch.setenv("HTTPX_PKI_CERT", str(cert))
     monkeypatch.setenv("HTTPX_PKI_KEY", str(key))
     with PKCSession.from_env() as session:
-        assert session.CN == "kp"
+        assert session.cn == "kp"
 
 
 def test_from_env_custom_prefix(
@@ -42,7 +42,7 @@ def test_from_env_custom_prefix(
     p12.write_bytes(bundle.pkcs12())
     monkeypatch.setenv("MYAPP_CERT", str(p12))
     with PKCSession.from_env("MYAPP_") as session:
-        assert session.CN == "svc"
+        assert session.cn == "svc"
 
 
 def test_from_env_missing_cert_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,7 +75,7 @@ def test_from_env_explicit_verify_overrides_ca(
     monkeypatch.setenv("HTTPX_PKI_CA", "/nonexistent/ca.pem")
     # explicit verify wins, so the bogus CA path is never opened
     with PKCSession.from_env(verify=True) as session:
-        assert session.CN == "c"
+        assert session.cn == "c"
 
 
 async def test_async_from_env(
@@ -86,4 +86,4 @@ async def test_async_from_env(
     p12.write_bytes(bundle.pkcs12())
     monkeypatch.setenv("HTTPX_PKI_CERT", str(p12))
     async with AsyncPKCSession.from_env() as session:
-        assert session.CN == "async-c"
+        assert session.cn == "async-c"

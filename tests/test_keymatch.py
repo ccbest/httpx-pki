@@ -30,4 +30,4 @@ def test_matching_pair_is_accepted() -> None:
     with PKCSession.from_key_pair(
         certificate=a.cert_pem, private_key=a.key_pem
     ) as session:
-        assert session.CN == "a"
+        assert session.cn == "a"

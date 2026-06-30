@@ -46,6 +46,7 @@ class CertBundle:
 
     @property
     def common_name(self) -> str:
+        """The certificate common name"""
         attrs = self.cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
         value = attrs[0].value
         return value if isinstance(value, str) else value.decode("utf-8")
@@ -114,7 +115,7 @@ def make_ca(common_name: str = "httpx-pki test CA") -> CertBundle:
     return CertBundle(key=key, cert=cert)
 
 
-def make_client_cert(
+def make_client_cert(  # pylint: disable=too-many-arguments
     common_name: str = "client",
     *,
     ca: CertBundle | None = None,
