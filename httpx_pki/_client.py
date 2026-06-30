@@ -25,7 +25,8 @@ from ._winstore import Predicate
 
 
 class PKCSession(_PKIMixin, httpx.Client):
-    """A synchronous :class:`httpx.Client` that presents a client certificate.
+    """
+    A synchronous :class:`httpx.Client` that presents a client certificate.
 
     Construct it from a PKCS#12 bundle (``.p12``/``.pfx``) or a PEM file -- the
     encoding is detected from the bytes, not the file extension -- with an
@@ -156,7 +157,8 @@ class PKCSession(_PKIMixin, httpx.Client):
 
 
 class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
-    """An asynchronous :class:`httpx.AsyncClient` that presents a client cert.
+    """
+    An asynchronous :class:`httpx.AsyncClient` that presents a client cert.
 
     The async counterpart of :class:`PKCSession`; the certificate, pickle, and
     alternate-constructor behavior are identical::

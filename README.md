@@ -222,6 +222,58 @@ ctx = build_ssl_context("client.p12", password="secret")
 client = httpx.Client(verify=ctx)
 ```
 
+### Custom transports (e.g. `httpx-retries`)
+
+`httpx-pki` is fully compatible with libraries that supply a custom transport,
+such as [`httpx-retries`](https://github.com/will-ockmore/httpx-retries) — but
+there is one **httpx rule** to know, and it is not specific to this library:
+
+> Whenever you pass a custom `transport=` (or `mounts=`) to an httpx client, httpx
+> uses that transport **as-is** and ignores the client-level `verify=`/`cert=`.
+> The TLS configuration — including your client certificate — must live on the
+> transport itself.
+
+So the client certificate has to be mounted on the **inner** transport that the
+retry transport wraps. `build_ssl_context()` is exactly that seam:
+
+```python
+import httpx
+from httpx_pki import build_ssl_context
+from httpx_retries import RetryTransport, Retry
+
+# ✅ WORKS — the cert lives on the inner transport the retry layer wraps
+ctx = build_ssl_context("client.p12", password="secret", verify="/etc/ssl/ca.pem")
+transport = RetryTransport(transport=httpx.HTTPTransport(verify=ctx),
+                           retry=Retry(total=5))
+client = httpx.Client(transport=transport)           # mTLS + retries
+resp = client.get("https://mtls.example.com/")
+```
+
+```python
+# ❌ DOES NOT mount the cert — the custom transport makes httpx ignore verify=,
+#    so no client certificate is presented and the handshake fails.
+from httpx_pki import PKCSession
+from httpx_retries import RetryTransport
+
+client = PKCSession("client.p12", password="secret",
+                    transport=RetryTransport())       # cert silently dropped!
+```
+
+If you specifically want your `PKCSession` *subclass* (its methods, `base_url`,
+`cert_info()`, ...) **and** retries, give that subclass the same inner transport.
+Its own `verify=` is ignored (the transport wins), but the rest of its behavior
+is preserved:
+
+```python
+ctx = build_ssl_context("client.p12", password="secret")
+inner = httpx.HTTPTransport(verify=ctx)
+client = PKCSession("client.p12", password="secret",
+                    transport=RetryTransport(transport=inner, retry=Retry(total=5)))
+```
+
+The same rule applies to any custom-transport library and to hand-built
+`mounts=` — put the TLS config on the transport, not on the client.
+
 ### Mismatched key / cert
 
 When you build from a separate key and certificate (`from_key_pair` or a PEM
