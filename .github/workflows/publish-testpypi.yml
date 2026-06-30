@@ -1,0 +1,52 @@
+name: Publish (TestPyPI)
+
+# Manual dry run of the release pipeline against TestPyPI. Trigger it from the
+# Actions tab ("Run workflow"). Each run stamps a unique .devN version so it can
+# be run repeatedly -- TestPyPI refuses to overwrite an existing version.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/httpx-pki
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Stamp a unique dev version
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          run = os.environ["GITHUB_RUN_NUMBER"]
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text()
+          # Only the [project] version line begins with "version" at column 0;
+          # ruff's "target-version" does not, so this rewrite leaves it alone.
+          text, n = re.subn(
+              r'(?m)^(version\s*=\s*")([^"]+)(")',
+              lambda m: f"{m.group(1)}{m.group(2)}.dev{run}{m.group(3)}",
+              text,
+              count=1,
+          )
+          assert n == 1, "could not find the project version line"
+          path.write_text(text)
+          print("stamped:", re.search(r'(?m)^version\s*=.*', text).group(0))
+          PY
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
