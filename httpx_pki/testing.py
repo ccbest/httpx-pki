@@ -110,6 +110,22 @@ def make_ca(common_name: str = "httpx-pki test CA") -> CertBundle:
         .not_valid_before(_utcnow() - datetime.timedelta(days=1))
         .not_valid_after(_utcnow() + datetime.timedelta(days=3650))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        # keyCertSign/cRLSign are required for a CA: OpenSSL 3.x (Python 3.13+)
+        # rejects a trust anchor that signs certs without a KeyUsage extension.
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
         .add_extension(
             x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
         )

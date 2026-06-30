@@ -4,8 +4,19 @@ from __future__ import annotations
 
 import datetime
 
+from cryptography import x509
+
 from httpx_pki import PKIClient
 from httpx_pki.testing import CertBundle, make_ca, make_client_cert
+
+
+def test_ca_has_certsign_key_usage() -> None:
+    # Without keyCertSign in a KeyUsage extension, OpenSSL 3.x (Python 3.13+)
+    # rejects the CA as a trust anchor -- "CA cert does not include key usage
+    # extension" -- breaking every mTLS round trip built on these helpers.
+    ku = make_ca().cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    assert ku.key_cert_sign
+    assert ku.crl_sign
 
 
 def test_self_signed_client_cert_loads() -> None:
