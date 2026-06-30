@@ -17,14 +17,45 @@ from pathlib import Path
 import certifi
 
 from ._exceptions import CertificateLoadError
-from ._material import Material
+from ._material import (
+    CertSource,
+    Material,
+    Password,
+    encode_password,
+    load_material,
+    read_source,
+)
 
 # Accepted values for ``verify``: ``True`` (default CA bundle), ``False``
 # (no server verification), a path to a CA bundle, or a ready-made SSLContext.
 VerifyTypes = bool | str | Path | ssl.SSLContext
 
 
-def build_ssl_context(material: Material, verify: VerifyTypes = True) -> ssl.SSLContext:
+def build_ssl_context(
+    cert: CertSource,
+    password: Password = None,
+    *,
+    verify: VerifyTypes = True,
+) -> ssl.SSLContext:
+    """Build a client-certificate ``ssl.SSLContext`` from a cert source.
+
+    A convenience for callers who want the SSL context without the
+    :class:`~httpx_pki.PKCSession` wrapper -- to mount on a plain
+    :class:`httpx.Client`, an httpx transport, or any library that accepts an
+    ``ssl.SSLContext``. *cert* is a PKCS#12 or PEM source (path or bytes; the
+    encoding is detected from the content) and *verify* configures server trust
+    exactly like httpx.
+
+        ctx = build_ssl_context("client.p12", password="secret")
+        client = httpx.Client(verify=ctx)
+    """
+    material = load_material(read_source(cert), encode_password(password))
+    return _context_from_material(material, verify)
+
+
+def _context_from_material(
+    material: Material, verify: VerifyTypes = True
+) -> ssl.SSLContext:
     """Create an SSL context that verifies the server per *verify* and presents
     the client certificate held in *material*."""
     ctx = _server_trust_context(verify)

@@ -47,6 +47,9 @@ Issues = "https://github.com/ccbest/httpx-pki/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["httpx_pki"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"httpx_pki/py.typed" = "httpx_pki/py.typed"
+
 [tool.ruff]
 line-length = 88
 target-version = "py310"

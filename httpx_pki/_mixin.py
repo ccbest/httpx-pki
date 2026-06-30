@@ -9,14 +9,20 @@ base class. This keeps the sync and async clients in lockstep and lets
 
 from __future__ import annotations
 
+import datetime
 import ssl
 import warnings
 from typing import Any, TypeVar
 
+from ._exceptions import CertificateExpiredError, CertificateNotYetValidError
 from ._material import CertInfo, Material, cert_info
-from ._ssl import VerifyTypes, build_ssl_context
+from ._ssl import VerifyTypes, _context_from_material
 
 _S = TypeVar("_S", bound="_PKIMixin")
+
+
+def _utcnow() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 class _PKIMixin:
@@ -33,12 +39,14 @@ class _PKIMixin:
         material: Material,
         *,
         verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
         **kwargs: Any,
     ) -> None:
         self._material = material
         self._verify_policy = verify
         self._httpx_kwargs = kwargs
-        context = build_ssl_context(material, verify)
+        self._warn_on_validity(warn_if_expires_within)
+        context = _context_from_material(material, verify)
         self._httpx_init(verify=context, **kwargs)
 
     @classmethod
@@ -47,6 +55,7 @@ class _PKIMixin:
         material: Material,
         *,
         verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
         **kwargs: Any,
     ) -> _S:
         """Build an instance from ready material, bypassing ``__init__``.
@@ -55,8 +64,96 @@ class _PKIMixin:
         :meth:`from_windows_cert_store`, ...).
         """
         self = cls.__new__(cls)
-        self._apply_material(material, verify=verify, **kwargs)
+        self._apply_material(
+            material,
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            **kwargs,
+        )
         return self
+
+    # -- validity -----------------------------------------------------------
+
+    @property
+    def not_valid_before(self) -> datetime.datetime:
+        """Start of the client certificate's validity window (UTC)."""
+        return cert_info(self._material.cert_pem).not_before
+
+    @property
+    def not_valid_after(self) -> datetime.datetime:
+        """End of the client certificate's validity window (UTC)."""
+        return cert_info(self._material.cert_pem).not_after
+
+    @property
+    def is_expired(self) -> bool:
+        """``True`` if the client certificate's validity window has ended."""
+        return _utcnow() > self.not_valid_after
+
+    @property
+    def is_not_yet_valid(self) -> bool:
+        """``True`` if the client certificate's validity window has not begun."""
+        return _utcnow() < self.not_valid_before
+
+    @property
+    def expires_in(self) -> datetime.timedelta:
+        """Time until the client certificate expires (negative if expired)."""
+        return self.not_valid_after - _utcnow()
+
+    def check_validity(
+        self, *, within: datetime.timedelta | None = None
+    ) -> None:
+        """Raise if the client certificate is not currently usable.
+
+        Raises :class:`~httpx_pki.CertificateNotYetValidError` before the
+        validity window opens and :class:`~httpx_pki.CertificateExpiredError`
+        once it has closed. If *within* is given, also raise
+        ``CertificateExpiredError`` when the certificate will expire inside that
+        window -- a one-call preflight for "is this good for the next N days?".
+        """
+        info = cert_info(self._material.cert_pem)
+        now = _utcnow()
+        not_before = f"{info.not_before:%Y-%m-%d %H:%M UTC}"
+        not_after = f"{info.not_after:%Y-%m-%d %H:%M UTC}"
+        if now < info.not_before:
+            raise CertificateNotYetValidError(
+                f"client certificate is not valid until {not_before}"
+            )
+        if now > info.not_after:
+            raise CertificateExpiredError(
+                f"client certificate expired on {not_after}"
+            )
+        if within is not None and info.not_after - now <= within:
+            raise CertificateExpiredError(
+                f"client certificate expires on {not_after}, within {within}"
+            )
+
+    def _warn_on_validity(
+        self, warn_if_expires_within: datetime.timedelta | None
+    ) -> None:
+        info = cert_info(self._material.cert_pem)
+        now = _utcnow()
+        if now > info.not_after:
+            warnings.warn(
+                f"client certificate expired on {info.not_after:%Y-%m-%d}; "
+                "mTLS handshakes will fail.",
+                stacklevel=3,
+            )
+        elif now < info.not_before:
+            warnings.warn(
+                f"client certificate is not valid until {info.not_before:%Y-%m-%d}; "
+                "mTLS handshakes will fail until then.",
+                stacklevel=3,
+            )
+        elif (
+            warn_if_expires_within is not None
+            and info.not_after - now <= warn_if_expires_within
+        ):
+            days = (info.not_after - now).days
+            warnings.warn(
+                f"client certificate expires on {info.not_after:%Y-%m-%d} "
+                f"(in {days} day(s)).",
+                stacklevel=3,
+            )
 
     def cert_info(self) -> CertInfo:
         """Return subject, validity window, and SANs of the client certificate."""

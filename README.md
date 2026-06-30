@@ -105,14 +105,32 @@ PKCSession.from_windows_cert_store(name="ACME", location="LocalMachine")
 
 Notes:
 
-- **Windows only** — calling it elsewhere raises `UnsupportedPlatformError`. The
-  implementation uses stdlib `ctypes` against `crypt32.dll`, lazily; it adds no
-  dependency and no import cost on Linux/macOS.
+- **Windows only** — calling it elsewhere raises `UnsupportedPlatformError`.
 - The certificate's private key must have been imported as **exportable** —
   otherwise the export fails with a `CertificateLoadError`.
 - No password is involved: the cert is exported under a random, single-use
   password that never leaves the library.
 - `AsyncPKCSession.from_windows_cert_store(...)` is the async equivalent.
+
+### From environment variables
+
+For containerized / 12-factor deployments, configure the certificate out of band:
+
+```python
+from httpx_pki import PKCSession
+
+with PKCSession.from_env() as client:        # reads HTTPX_PKI_* by default
+    client.get("https://mtls.example.com/")
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `HTTPX_PKI_CERT` | path to a PKCS#12 or PEM source (**required**) |
+| `HTTPX_PKI_PASSWORD` | password for the cert / key (optional) |
+| `HTTPX_PKI_KEY` | path to a separate private key; switches to cert+key mode |
+| `HTTPX_PKI_CA` | CA bundle for **server** trust (`verify=`) |
+
+Pass a different `prefix=` to namespace per service (`PKCSession.from_env("MYAPP_")`).
 
 ### Async
 
@@ -159,6 +177,74 @@ class MyServiceSession(PKCSession):
 ```python
 info = client.cert_info()
 print(info.common_name, info.not_after, info.subject_alt_names)
+```
+
+### Expiry awareness
+
+An expired (or not-yet-valid) client certificate is the most common silent mTLS
+failure. Loading one **warns** immediately, and the session exposes its validity
+window so you can check before you depend on it:
+
+```python
+client.is_expired        # bool
+client.is_not_yet_valid  # bool
+client.expires_in        # timedelta (negative once expired)
+client.not_valid_after   # datetime (UTC)
+```
+
+Pass `warn_if_expires_within=` to be told about a cert that's about to roll over,
+and call `check_validity()` to turn "not currently usable" into a hard error:
+
+```python
+from datetime import timedelta
+from httpx_pki import PKCSession, CertificateExpiredError
+
+client = PKCSession("client.p12", password="secret",
+                    warn_if_expires_within=timedelta(days=14))
+
+client.check_validity()                       # raises if expired / not yet valid
+client.check_validity(within=timedelta(days=7))  # also raises if it expires soon
+```
+
+(`check_validity` raises `CertificateExpiredError` or `CertificateNotYetValidError`.)
+
+### Just the SSL context
+
+Don't want the session wrapper? `build_ssl_context` gives you the hard part — a
+ready `ssl.SSLContext` with the client certificate mounted — to use with a plain
+`httpx.Client`, an httpx transport, or anything else that accepts a context:
+
+```python
+import httpx
+from httpx_pki import build_ssl_context
+
+ctx = build_ssl_context("client.p12", password="secret")
+client = httpx.Client(verify=ctx)
+```
+
+### Mismatched key / cert
+
+When you build from a separate key and certificate (`from_key_pair` or a PEM
+bundle), `httpx-pki` checks that the private key actually matches the certificate
+and raises `CertificateLoadError` up front, instead of letting it surface later as
+an opaque OpenSSL handshake error.
+
+### Testing helpers
+
+`httpx_pki.testing` mints throwaway certificates so your own test suites don't
+have to re-derive the `cryptography` boilerplate:
+
+```python
+from httpx_pki import PKCSession
+from httpx_pki.testing import make_ca, make_client_cert
+
+ca = make_ca()
+bundle = make_client_cert("svc-client", ca=ca, dns_names=["svc.internal"])
+
+with PKCSession(bundle.pkcs12(), password=b"") as client:
+    assert client.CN == "svc-client"
+
+expired = make_client_cert("old", ca=ca, expired=True)   # for expiry tests
 ```
 
 ## ⚠️ Security note on pickling

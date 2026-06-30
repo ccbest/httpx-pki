@@ -128,6 +128,7 @@ def parse_pem_bundle(data: bytes, password: bytes | None) -> Material:
 
     key = _load_private_key(key_block, password)
     leaf = _load_certificate(cert_blocks[0])
+    _verify_key_matches_cert(key, leaf)
     key_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
@@ -151,6 +152,26 @@ def load_material(data: bytes, password: bytes | None) -> Material:
     if b"-----BEGIN" in data:
         return parse_pem_bundle(data, password)
     return parse_pkcs12(data, password)
+
+
+def _verify_key_matches_cert(
+    key: PrivateKeyTypes, cert: x509.Certificate
+) -> None:
+    """Raise if *key* is not the private half of *cert*'s public key.
+
+    A mismatched key and certificate -- common when a ``.pem`` is assembled by
+    hand from the wrong pieces -- otherwise surfaces only as an inscrutable
+    OpenSSL handshake error. Comparing the SubjectPublicKeyInfo encodings works
+    uniformly across RSA, EC, and the Ed25519/Ed448 key types.
+    """
+    spki = serialization.PublicFormat.SubjectPublicKeyInfo
+    der = serialization.Encoding.DER
+    key_pub = key.public_key().public_bytes(der, spki)
+    cert_pub = cert.public_key().public_bytes(der, spki)
+    if key_pub != cert_pub:
+        raise CertificateLoadError(
+            "private key does not match certificate (their public keys differ)"
+        )
 
 
 def _load_certificate(data: bytes) -> x509.Certificate:
@@ -186,6 +207,7 @@ def normalize_pem(
     """Build canonical material from a separate certificate and private key."""
     cert = _load_certificate(read_source(certificate))
     key = _load_private_key(read_source(private_key), encode_password(key_password))
+    _verify_key_matches_cert(key, cert)
 
     ca_sources: list[CertSource]
     if ca is None:

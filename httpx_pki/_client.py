@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import datetime
 import ssl
 from typing import Any
 
 import httpx
 
+from ._env import resolve_env_material
 from ._material import (
     CertSource,
     Password,
@@ -44,13 +46,38 @@ class PKCSession(_PKIMixin, httpx.Client):
         password: Password = None,
         *,
         verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
         **kwargs: Any,
     ) -> None:
         material = load_material(read_source(cert), encode_password(password))
-        self._apply_material(material, verify=verify, **kwargs)
+        self._apply_material(
+            material,
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            **kwargs,
+        )
 
     def _httpx_init(self, *, verify: ssl.SSLContext, **kwargs: Any) -> None:
         httpx.Client.__init__(self, verify=verify, **kwargs)
+
+    @classmethod
+    def from_env(
+        cls,
+        prefix: str = "HTTPX_PKI_",
+        *,
+        verify: VerifyTypes | None = None,
+        **kwargs: Any,
+    ) -> PKCSession:
+        """Build a session from ``{prefix}*`` environment variables.
+
+        Reads ``{prefix}CERT`` (required), ``{prefix}PASSWORD``, ``{prefix}KEY``
+        (switches to a separate cert+key), and ``{prefix}CA`` (server-trust
+        bundle). An explicit *verify* overrides ``{prefix}CA``.
+        """
+        material, env_verify = resolve_env_material(prefix)
+        return cls._from_material(
+            material, verify=env_verify if verify is None else verify, **kwargs
+        )
 
     @classmethod
     def from_pkcs12(
@@ -144,13 +171,33 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
         password: Password = None,
         *,
         verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
         **kwargs: Any,
     ) -> None:
         material = load_material(read_source(cert), encode_password(password))
-        self._apply_material(material, verify=verify, **kwargs)
+        self._apply_material(
+            material,
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            **kwargs,
+        )
 
     def _httpx_init(self, *, verify: ssl.SSLContext, **kwargs: Any) -> None:
         httpx.AsyncClient.__init__(self, verify=verify, **kwargs)
+
+    @classmethod
+    def from_env(
+        cls,
+        prefix: str = "HTTPX_PKI_",
+        *,
+        verify: VerifyTypes | None = None,
+        **kwargs: Any,
+    ) -> AsyncPKCSession:
+        """Async counterpart of :meth:`PKCSession.from_env`."""
+        material, env_verify = resolve_env_material(prefix)
+        return cls._from_material(
+            material, verify=env_verify if verify is None else verify, **kwargs
+        )
 
     @classmethod
     def from_pkcs12(

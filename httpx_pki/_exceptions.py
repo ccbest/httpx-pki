@@ -10,8 +10,25 @@ class PKIError(Exception):
 class CertificateLoadError(PKIError):
     """Raised when certificate material cannot be parsed or decrypted.
 
-    Typical causes are corrupt PKCS#12 data, a wrong (or missing) password, or
-    a PEM key/certificate that cannot be deserialized.
+    Typical causes are corrupt PKCS#12 data, a wrong (or missing) password, a
+    PEM key/certificate that cannot be deserialized, or a private key that does
+    not match its certificate.
+    """
+
+
+class CertificateExpiredError(PKIError):
+    """Raised when a certificate's validity window has already ended.
+
+    Raised by :meth:`PKCSession.check_validity`. Construction only *warns* about
+    an expired certificate; call ``check_validity()`` to turn it into an error.
+    """
+
+
+class CertificateNotYetValidError(PKIError):
+    """Raised when a certificate's validity window has not yet begun.
+
+    Raised by :meth:`PKCSession.check_validity` for a ``notBefore`` in the
+    future (typically a clock-skew or freshly minted-cert problem).
     """
 
 
