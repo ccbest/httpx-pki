@@ -1,5 +1,12 @@
 # httpx-pki
 
+[![CI](https://img.shields.io/github/actions/workflow/status/ccbest/httpx-pki/ci.yml?branch=main&label=CI)](https://github.com/ccbest/httpx-pki/actions/workflows/ci.yml)
+[![codecov](https://img.shields.io/codecov/c/github/ccbest/httpx-pki?branch=main)](https://codecov.io/gh/ccbest/httpx-pki)
+[![PyPI](https://img.shields.io/pypi/v/httpx-pki)](https://pypi.org/project/httpx-pki/)
+[![Python versions](https://img.shields.io/pypi/pyversions/httpx-pki)](https://pypi.org/project/httpx-pki/)
+[![License: MIT](https://img.shields.io/pypi/l/httpx-pki)](https://github.com/ccbest/httpx-pki/blob/main/LICENSE)
+[![Checked with mypy](https://img.shields.io/badge/mypy-checked-2a6db2)](https://mypy-lang.org/)
+
 PKCS#12 client-certificate (mTLS) sessions for [httpx](https://www.python-httpx.org/).
 
 `httpx-pki` gives you an `httpx.Client` (and `httpx.AsyncClient`) subclass with a

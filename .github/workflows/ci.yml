@@ -35,4 +35,14 @@ jobs:
       # Run the suite on both OSes -- this is what imports the crypt32 ctypes
       # module and exercises the Windows-store selection logic on Windows.
       - name: Pytest (coverage)
-        run: pytest -q --cov=httpx_pki --cov-report=term-missing --cov-fail-under=80
+        run: pytest -q --cov=httpx_pki --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+      # Upload from a single representative job: the platform-specific winstore
+      # code is pragma-excluded, so every matrix cell reports the same lines --
+      # one upload keeps the Codecov number stable and avoids 8x merges.
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          fail_ci_if_error: false
