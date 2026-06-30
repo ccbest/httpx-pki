@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._client import AsyncPKCSession, PKCSession
+from ._client import AsyncPKIClient, PKIClient
 from ._exceptions import (
     AmbiguousCertificateError,
     CertificateExpiredError,
@@ -17,8 +17,8 @@ from ._ssl import build_ssl_context
 from ._winstore import WinCert
 
 __all__ = [
-    "PKCSession",
-    "AsyncPKCSession",
+    "PKIClient",
+    "AsyncPKIClient",
     "build_ssl_context",
     "PKIError",
     "CertificateLoadError",

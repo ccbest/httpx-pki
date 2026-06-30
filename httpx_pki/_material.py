@@ -16,7 +16,10 @@ from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
+from cryptography.hazmat.primitives.asymmetric.types import (
+    PrivateKeyTypes,
+    PublicKeyTypes,
+)
 from cryptography.hazmat.primitives.serialization import pkcs12
 
 from ._exceptions import CertificateLoadError
@@ -38,13 +41,19 @@ class Material:
 
 @dataclass(frozen=True)
 class CertInfo:
-    """Human-readable summary of a client certificate."""
+    """Human-readable summary of a client certificate.
+
+    ``subject_alt_names`` carries every Subject Alternative Name entry as a
+    string (DNS names, IP addresses, email addresses, and URIs); ``dns_names``
+    is just the dNSName subset, for the common case of hostname checks.
+    """
 
     common_name: str | None
     distinguished_name: str
     not_before: datetime.datetime
     not_after: datetime.datetime
     subject_alt_names: list[str]
+    dns_names: list[str] = field(default_factory=list)
 
 
 def read_source(src: CertSource) -> bytes:
@@ -127,18 +136,15 @@ def parse_pem_bundle(data: bytes, password: bytes | None) -> Material:
         raise CertificateLoadError("no certificate found in PEM data")
 
     key = _load_private_key(key_block, password)
-    leaf = _load_certificate(cert_blocks[0])
-    _verify_key_matches_cert(key, leaf)
+    certs = [_load_certificate(block) for block in cert_blocks]
+    leaf, chain = _split_leaf_and_chain(key, certs)
     key_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
     cert_pem = leaf.public_bytes(serialization.Encoding.PEM)
-    ca_pems = [
-        _load_certificate(block).public_bytes(serialization.Encoding.PEM)
-        for block in cert_blocks[1:]
-    ]
+    ca_pems = [c.public_bytes(serialization.Encoding.PEM) for c in chain]
     return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
 
 
@@ -154,6 +160,18 @@ def load_material(data: bytes, password: bytes | None) -> Material:
     return parse_pkcs12(data, password)
 
 
+def _spki(public_key: PublicKeyTypes) -> bytes:
+    """DER-encoded SubjectPublicKeyInfo, the type-agnostic public-key identity.
+
+    Comparing these encodings matches a key to a certificate uniformly across
+    RSA, EC, and the Ed25519/Ed448 key types.
+    """
+    return public_key.public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+
 def _verify_key_matches_cert(
     key: PrivateKeyTypes, cert: x509.Certificate
 ) -> None:
@@ -161,17 +179,33 @@ def _verify_key_matches_cert(
 
     A mismatched key and certificate -- common when a ``.pem`` is assembled by
     hand from the wrong pieces -- otherwise surfaces only as an inscrutable
-    OpenSSL handshake error. Comparing the SubjectPublicKeyInfo encodings works
-    uniformly across RSA, EC, and the Ed25519/Ed448 key types.
+    OpenSSL handshake error.
     """
-    spki = serialization.PublicFormat.SubjectPublicKeyInfo
-    der = serialization.Encoding.DER
-    key_pub = key.public_key().public_bytes(der, spki)
-    cert_pub = cert.public_key().public_bytes(der, spki)
-    if key_pub != cert_pub:
+    if _spki(key.public_key()) != _spki(cert.public_key()):
         raise CertificateLoadError(
             "private key does not match certificate (their public keys differ)"
         )
+
+
+def _split_leaf_and_chain(
+    key: PrivateKeyTypes, certs: list[x509.Certificate]
+) -> tuple[x509.Certificate, list[x509.Certificate]]:
+    """Identify the leaf among *certs* as the one matching *key*.
+
+    A PEM bundle may list its certificates in any order, so the leaf is the
+    certificate whose public key matches the private key -- not simply the
+    first. The remaining certificates (in their original order) are the chain.
+    Raising on *which* cert is the leaf, rather than assuming position, keeps a
+    correctly-keyed-but-out-of-order bundle from failing with a misleading
+    "key does not match" error.
+    """
+    key_spki = _spki(key.public_key())
+    for i, cert in enumerate(certs):
+        if _spki(cert.public_key()) == key_spki:
+            return cert, certs[:i] + certs[i + 1 :]
+    raise CertificateLoadError(
+        "private key does not match any certificate in the PEM data"
+    )
 
 
 def _load_certificate(data: bytes) -> x509.Certificate:
@@ -257,12 +291,21 @@ def cert_info(cert_pem: bytes) -> CertInfo:
         value = cn_attrs[0].value
         common_name = value if isinstance(value, str) else value.decode("utf-8")
 
+    dns_names: list[str] = []
     sans: list[str] = []
     try:
-        ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-        sans = ext.value.get_values_for_type(x509.DNSName)
+        san = cert.extensions.get_extension_for_class(
+            x509.SubjectAlternativeName
+        ).value
     except x509.ExtensionNotFound:
         pass
+    else:
+        dns_names = san.get_values_for_type(x509.DNSName)
+        # DNS first (the common case), then the other name types as strings.
+        sans = list(dns_names)
+        sans += [str(ip) for ip in san.get_values_for_type(x509.IPAddress)]
+        sans += san.get_values_for_type(x509.RFC822Name)
+        sans += san.get_values_for_type(x509.UniformResourceIdentifier)
 
     return CertInfo(
         common_name=common_name,
@@ -270,4 +313,5 @@ def cert_info(cert_pem: bytes) -> CertInfo:
         not_before=cert.not_valid_before_utc,
         not_after=cert.not_valid_after_utc,
         subject_alt_names=sans,
+        dns_names=dns_names,
     )

@@ -1,15 +1,15 @@
 """Helpers for minting throwaway certificates in tests.
 
 ``httpx-pki`` underpins other libraries, whose test suites all need a client
-certificate to point a :class:`~httpx_pki.PKCSession` at. Rather than re-deriving
+certificate to point a :class:`~httpx_pki.PKIClient` at. Rather than re-deriving
 the ``cryptography`` boilerplate in every downstream ``conftest.py``, build one
 here::
 
-    from httpx_pki import PKCSession
+    from httpx_pki import PKIClient
     from httpx_pki.testing import make_client_cert
 
     bundle = make_client_cert("svc-client")
-    with PKCSession(bundle.pkcs12(), password=b"") as client:
+    with PKIClient(bundle.pkcs12(), password=b"") as client:
         ...
 
 Everything is in-memory and self-signed (or signed by a CA you pass in); none of
@@ -79,7 +79,7 @@ class CertBundle:
         """Serialize to a PKCS#12 blob, encrypted with *password*.
 
         An empty password (the default) produces an unencrypted PKCS#12, which
-        :class:`~httpx_pki.PKCSession` loads with ``password=b""``.
+        :class:`~httpx_pki.PKIClient` loads with ``password=b""``.
         """
         pw = password.encode() if isinstance(password, str) else password
         encryption: serialization.KeySerializationEncryption
@@ -134,7 +134,7 @@ def make_client_cert(  # pylint: disable=too-many-arguments
     populate the Subject Alternative Name extension. The validity window
     defaults to (yesterday, +365 days); override it with *not_before*/
     *not_after*, or pass ``expired=True`` for a window that has already closed
-    (handy for exercising :meth:`PKCSession.check_validity`).
+    (handy for exercising :meth:`PKIClient.check_validity`).
     """
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = _utcnow()

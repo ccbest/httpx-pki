@@ -8,12 +8,12 @@ import ssl
 import httpx
 import pytest
 
-from httpx_pki import AsyncPKCSession, PKCSession
+from httpx_pki import AsyncPKIClient, PKIClient
 from tests.conftest import P12_PASSWORD, MTLSServer
 
 
 def test_mtls_request_succeeds(mtls_server: MTLSServer, client_p12: bytes) -> None:
-    with PKCSession(
+    with PKIClient(
         client_p12, password=P12_PASSWORD, verify=str(mtls_server.ca_file)
     ) as session:
         resp = session.get(mtls_server.url)
@@ -30,7 +30,7 @@ def test_mtls_rejects_without_client_cert(mtls_server: MTLSServer) -> None:
 
 
 def test_mtls_survives_pickle(mtls_server: MTLSServer, client_p12: bytes) -> None:
-    session = PKCSession(
+    session = PKIClient(
         client_p12, password=P12_PASSWORD, verify=str(mtls_server.ca_file)
     )
     restored = pickle.loads(pickle.dumps(session))
@@ -44,7 +44,7 @@ def test_mtls_survives_pickle(mtls_server: MTLSServer, client_p12: bytes) -> Non
 async def test_mtls_async_request_succeeds(
     mtls_server: MTLSServer, client_p12: bytes
 ) -> None:
-    async with AsyncPKCSession(
+    async with AsyncPKIClient(
         client_p12, password=P12_PASSWORD, verify=str(mtls_server.ca_file)
     ) as session:
         resp = await session.get(mtls_server.url)

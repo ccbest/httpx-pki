@@ -19,7 +19,7 @@ class CertificateLoadError(PKIError):
 class CertificateExpiredError(PKIError):
     """Raised when a certificate's validity window has already ended.
 
-    Raised by :meth:`PKCSession.check_validity`. Construction only *warns* about
+    Raised by :meth:`PKIClient.check_validity`. Construction only *warns* about
     an expired certificate; call ``check_validity()`` to turn it into an error.
     """
 
@@ -27,7 +27,7 @@ class CertificateExpiredError(PKIError):
 class CertificateNotYetValidError(PKIError):
     """Raised when a certificate's validity window has not yet begun.
 
-    Raised by :meth:`PKCSession.check_validity` for a ``notBefore`` in the
+    Raised by :meth:`PKIClient.check_validity` for a ``notBefore`` in the
     future (typically a clock-skew or freshly minted-cert problem).
     """
 
@@ -47,6 +47,6 @@ class AmbiguousCertificateError(PKIError):
 class UnsupportedPlatformError(PKIError):
     """Raised when a platform-specific feature is used on the wrong platform.
 
-    For example, :meth:`PKCSession.from_windows_cert_store` is only available on
+    For example, :meth:`PKIClient.from_windows_cert_store` is only available on
     Windows.
     """

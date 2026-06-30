@@ -37,7 +37,7 @@ def test_build_ssl_context_autodetects_pem(client_p12: bytes) -> None:
 def test_build_ssl_context_mounts_on_plain_httpx_client(
     mtls_server: object, client_p12: bytes
 ) -> None:
-    # The whole point: use the context with a vanilla httpx.Client, no PKCSession.
+    # The whole point: use the context with a vanilla httpx.Client, no PKIClient.
     server = mtls_server  # MTLSServer(url, ca_file)
     ctx = build_ssl_context(
         client_p12, password=P12_PASSWORD, verify=str(server.ca_file)  # type: ignore[attr-defined]

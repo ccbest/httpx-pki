@@ -15,7 +15,7 @@ import httpx_pki._winstore as winstore
 from httpx_pki import (
     AmbiguousCertificateError,
     CertificateNotFoundError,
-    PKCSession,
+    PKIClient,
     UnsupportedPlatformError,
     WinCert,
 )
@@ -103,7 +103,7 @@ def test_load_raises_on_non_windows() -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="tests the non-Windows guard")
 def test_constructor_raises_on_non_windows() -> None:
     with pytest.raises(UnsupportedPlatformError):
-        PKCSession.from_windows_cert_store(name="anything")
+        PKIClient.from_windows_cert_store(name="anything")
 
 
 def test_from_windows_cert_store_mocked(
@@ -130,7 +130,7 @@ def test_from_windows_cert_store_mocked(
     monkeypatch.setattr(winstore, "_export_pfx", fake_export)
     monkeypatch.setattr(winstore.sys, "platform", "win32")
 
-    with PKCSession.from_windows_cert_store(name="test-client") as session:
+    with PKIClient.from_windows_cert_store(name="test-client") as session:
         assert session.cert_info().common_name == CLIENT_CN
 
 
@@ -140,7 +140,7 @@ def test_from_windows_cert_store_not_found_mocked(
     monkeypatch.setattr(winstore, "_enumerate_store", lambda store, location: [])
     monkeypatch.setattr(winstore.sys, "platform", "win32")
     with pytest.raises(CertificateNotFoundError):
-        PKCSession.from_windows_cert_store(name="nope")
+        PKIClient.from_windows_cert_store(name="nope")
 
 
 class _FakeCrypt32:

@@ -9,35 +9,35 @@ from pathlib import Path
 import httpx
 import pytest
 
-from httpx_pki import AsyncPKCSession, CertificateLoadError, PKCSession
+from httpx_pki import AsyncPKIClient, CertificateLoadError, PKIClient
 from tests.conftest import CLIENT_CN, P12_PASSWORD, Signed
 
 
 def test_from_pkcs12_path(client_p12_file: Path) -> None:
-    session = PKCSession(client_p12_file, password=P12_PASSWORD)
+    session = PKIClient(client_p12_file, password=P12_PASSWORD)
     assert isinstance(session, httpx.Client)
     assert session._transport is not None
     session.close()
 
 
 def test_from_pkcs12_bytes(client_p12: bytes) -> None:
-    session = PKCSession(client_p12, password=P12_PASSWORD)
+    session = PKIClient(client_p12, password=P12_PASSWORD)
     assert session.cert_info().common_name == CLIENT_CN
     session.close()
 
 
 def test_password_as_bytes(client_p12: bytes) -> None:
-    with PKCSession(client_p12, password=P12_PASSWORD.encode()) as session:
+    with PKIClient(client_p12, password=P12_PASSWORD.encode()) as session:
         assert session.cert_info().common_name == CLIENT_CN
 
 
 def test_from_pkcs12_classmethod(client_p12: bytes) -> None:
-    with PKCSession.from_pkcs12(client_p12, P12_PASSWORD) as session:
+    with PKIClient.from_pkcs12(client_p12, P12_PASSWORD) as session:
         assert session.cert_info().common_name == CLIENT_CN
 
 
 def test_from_key_pair(client: Signed, ca: Signed) -> None:
-    with PKCSession.from_key_pair(
+    with PKIClient.from_key_pair(
         certificate=client.cert_pem,
         private_key=client.key_pem,
     ) as session:
@@ -48,14 +48,14 @@ def test_from_key_pair(client: Signed, ca: Signed) -> None:
 
 def test_from_key_pair_with_chain(client: Signed, ca: Signed) -> None:
     # chain= takes one source or a list; both produce the same ca_pems.
-    with PKCSession.from_key_pair(
+    with PKIClient.from_key_pair(
         certificate=client.cert_pem,
         private_key=client.key_pem,
         chain=ca.cert_pem,
     ) as session:
         assert session.cn == CLIENT_CN
         assert session._material.ca_pems == [ca.cert_pem]
-    with PKCSession.from_key_pair(
+    with PKIClient.from_key_pair(
         certificate=client.cert_pem,
         private_key=client.key_pem,
         chain=[ca.cert_pem],
@@ -66,7 +66,7 @@ def test_from_key_pair_with_chain(client: Signed, ca: Signed) -> None:
 def test_from_key_pair_chain_multi_cert_blob(client: Signed, ca: Signed) -> None:
     # A single chain source holding several PEM certs splits into each cert.
     blob = ca.cert_pem + client.cert_pem
-    with PKCSession.from_key_pair(
+    with PKIClient.from_key_pair(
         certificate=client.cert_pem,
         private_key=client.key_pem,
         chain=blob,
@@ -76,26 +76,26 @@ def test_from_key_pair_chain_multi_cert_blob(client: Signed, ca: Signed) -> None
 
 def test_wrong_password_raises(client_p12: bytes) -> None:
     with pytest.raises(CertificateLoadError):
-        PKCSession(client_p12, password="wrong")
+        PKIClient(client_p12, password="wrong")
 
 
 def test_garbage_bytes_raises() -> None:
     with pytest.raises(CertificateLoadError):
-        PKCSession(b"not a pkcs12 blob", password="x")
+        PKIClient(b"not a pkcs12 blob", password="x")
 
 
 def test_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(CertificateLoadError):
-        PKCSession(tmp_path / "nope.p12", password="x")
+        PKIClient(tmp_path / "nope.p12", password="x")
 
 
 def test_bad_source_type_raises() -> None:
     with pytest.raises(TypeError):
-        PKCSession(12345)  # type: ignore[arg-type]
+        PKIClient(12345)  # type: ignore[arg-type]
 
 
 def test_context_manager_closes(client_p12: bytes) -> None:
-    session = PKCSession(client_p12, password=P12_PASSWORD)
+    session = PKIClient(client_p12, password=P12_PASSWORD)
     with session as entered:
         assert entered is session
         assert not session.is_closed
@@ -103,7 +103,7 @@ def test_context_manager_closes(client_p12: bytes) -> None:
 
 
 def test_httpx_kwargs_passthrough(client_p12: bytes) -> None:
-    with PKCSession(
+    with PKIClient(
         client_p12,
         password=P12_PASSWORD,
         base_url="https://api.example.com",
@@ -114,7 +114,7 @@ def test_httpx_kwargs_passthrough(client_p12: bytes) -> None:
 
 
 def test_cert_info_fields(client_p12: bytes) -> None:
-    with PKCSession(client_p12, password=P12_PASSWORD) as session:
+    with PKIClient(client_p12, password=P12_PASSWORD) as session:
         info = session.cert_info()
         assert info.common_name == CLIENT_CN
         assert info.distinguished_name == f"CN={CLIENT_CN}"
@@ -122,19 +122,36 @@ def test_cert_info_fields(client_p12: bytes) -> None:
         assert "test-client.example.com" in info.subject_alt_names
 
 
+def test_cert_info_san_types() -> None:
+    # SANs of every type are surfaced as strings; dns_names is the DNS subset.
+    from httpx_pki import cert_info
+    from httpx_pki.testing import make_ca, make_client_cert
+
+    bundle = make_client_cert(
+        "multi",
+        ca=make_ca(),
+        dns_names=["svc.internal", "svc.example.com"],
+        ip_addresses=["10.0.0.5"],
+    )
+    info = cert_info(bundle.cert_pem)
+    assert info.dns_names == ["svc.internal", "svc.example.com"]
+    assert "svc.internal" in info.subject_alt_names
+    assert "10.0.0.5" in info.subject_alt_names  # IP SANs no longer dropped
+
+
 def test_cn_and_dn_properties(client_p12: bytes) -> None:
-    with PKCSession(client_p12, password=P12_PASSWORD) as session:
+    with PKIClient(client_p12, password=P12_PASSWORD) as session:
         assert session.cn == CLIENT_CN
         assert session.dn == f"CN={CLIENT_CN}"
 
 
 def test_pickle_round_trip(client_p12: bytes) -> None:
-    session = PKCSession(
+    session = PKIClient(
         client_p12, password=P12_PASSWORD, base_url="https://api.example.com"
     )
     restored = pickle.loads(pickle.dumps(session))
     try:
-        assert isinstance(restored, PKCSession)
+        assert isinstance(restored, PKIClient)
         # canonical material is byte-for-byte preserved
         assert restored._material == session._material
         # a fresh, distinct live SSL context was rebuilt
@@ -147,7 +164,7 @@ def test_pickle_round_trip(client_p12: bytes) -> None:
 
 
 def test_repr_hides_secrets(client_p12: bytes) -> None:
-    with PKCSession(client_p12, password=P12_PASSWORD) as session:
+    with PKIClient(client_p12, password=P12_PASSWORD) as session:
         text = repr(session)
         assert CLIENT_CN in text
         assert P12_PASSWORD not in text
@@ -156,7 +173,7 @@ def test_repr_hides_secrets(client_p12: bytes) -> None:
 
 
 def test_subclassing(client_p12: bytes) -> None:
-    class MySession(PKCSession):
+    class MySession(PKIClient):
         def __init__(self, p12: bytes, **kwargs: object) -> None:
             super().__init__(p12, password=P12_PASSWORD, **kwargs)
 
@@ -172,7 +189,7 @@ def test_cert_kwarg_rejected(client: Signed) -> None:
     # httpx's deprecated cert= must not slip through **kwargs and collide with
     # the SSL context we mount on verify=.
     with pytest.raises(TypeError, match="cert="):
-        PKCSession.from_key_pair(
+        PKIClient.from_key_pair(
             certificate=client.cert_pem,
             private_key=client.key_pem,
             cert="ignored.pem",
@@ -181,13 +198,13 @@ def test_cert_kwarg_rejected(client: Signed) -> None:
 
 def test_verify_false_warns(client_p12: bytes) -> None:
     with pytest.warns(UserWarning, match="verify=False"):
-        session = PKCSession(client_p12, password=P12_PASSWORD, verify=False)
+        session = PKIClient(client_p12, password=P12_PASSWORD, verify=False)
     session.close()
 
 
 def test_custom_transport_warns(client_p12: bytes) -> None:
     with pytest.warns(UserWarning, match="custom transport=/mounts="):
-        session = PKCSession(
+        session = PKIClient(
             client_p12, password=P12_PASSWORD, transport=httpx.HTTPTransport()
         )
     session.close()
@@ -195,10 +212,25 @@ def test_custom_transport_warns(client_p12: bytes) -> None:
 
 def test_custom_mounts_warns(client_p12: bytes) -> None:
     with pytest.warns(UserWarning, match="custom transport=/mounts="):
-        session = PKCSession(
+        session = PKIClient(
             client_p12,
             password=P12_PASSWORD,
             mounts={"https://": httpx.HTTPTransport()},
+        )
+    session.close()
+
+
+def test_http_only_mount_does_not_warn(client_p12: bytes) -> None:
+    # An http://-only mount leaves the default https transport (which honors
+    # verify=) in place, so the client cert is still mounted -- no warning.
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        session = PKIClient(
+            client_p12,
+            password=P12_PASSWORD,
+            mounts={"http://": httpx.HTTPTransport()},
         )
     session.close()
 
@@ -208,14 +240,14 @@ def test_no_transport_does_not_warn(client_p12: bytes) -> None:
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        session = PKCSession(client_p12, password=P12_PASSWORD)
+        session = PKIClient(client_p12, password=P12_PASSWORD)
     session.close()
 
 
 def test_verify_custom_context_not_pickled(client_p12: bytes) -> None:
     ctx = ssl.create_default_context()
     with pytest.warns(UserWarning, match="pre-built ssl.SSLContext"):
-        session = PKCSession(client_p12, password=P12_PASSWORD, verify=ctx)
+        session = PKIClient(client_p12, password=P12_PASSWORD, verify=ctx)
     try:
         with pytest.warns(UserWarning, match="custom ssl.SSLContext"):
             pickle.dumps(session)
@@ -224,16 +256,16 @@ def test_verify_custom_context_not_pickled(client_p12: bytes) -> None:
 
 
 async def test_async_from_pkcs12(client_p12: bytes) -> None:
-    async with AsyncPKCSession(client_p12, password=P12_PASSWORD) as session:
+    async with AsyncPKIClient(client_p12, password=P12_PASSWORD) as session:
         assert isinstance(session, httpx.AsyncClient)
         assert session.cert_info().common_name == CLIENT_CN
 
 
 async def test_async_pickle_round_trip(client_p12: bytes) -> None:
-    session = AsyncPKCSession(client_p12, password=P12_PASSWORD)
+    session = AsyncPKIClient(client_p12, password=P12_PASSWORD)
     restored = pickle.loads(pickle.dumps(session))
     try:
-        assert isinstance(restored, AsyncPKCSession)
+        assert isinstance(restored, AsyncPKIClient)
         assert restored._material == session._material
     finally:
         await session.aclose()

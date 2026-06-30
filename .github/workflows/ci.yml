@@ -7,10 +7,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -21,11 +22,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+      # Lint/type-checks are platform-independent; run them once on Linux.
       - name: Ruff
+        if: runner.os == 'Linux'
         run: ruff check .
       - name: Pylint
+        if: runner.os == 'Linux'
         run: pylint httpx_pki --fail-under=9.9
       - name: Mypy
+        if: runner.os == 'Linux'
         run: mypy httpx_pki
+      # Run the suite on both OSes -- this is what imports the crypt32 ctypes
+      # module and exercises the Windows-store selection logic on Windows.
       - name: Pytest (coverage)
         run: pytest -q --cov=httpx_pki --cov-report=term-missing --cov-fail-under=80

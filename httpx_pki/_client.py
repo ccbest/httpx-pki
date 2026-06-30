@@ -24,7 +24,7 @@ from ._ssl import VerifyTypes
 from ._winstore import Predicate
 
 
-class PKCSession(_PKIMixin, httpx.Client):
+class PKIClient(_PKIMixin, httpx.Client):
     """
     A synchronous :class:`httpx.Client` that presents a client certificate.
 
@@ -32,7 +32,7 @@ class PKCSession(_PKIMixin, httpx.Client):
     encoding is detected from the bytes, not the file extension -- with an
     optional password::
 
-        with PKCSession("client.p12", password="secret") as client:
+        with PKIClient("client.p12", password="secret") as client:
             client.get("https://mtls.example.com/")
 
     Subclass it to layer on your own behavior, use it as a context manager, and
@@ -68,7 +68,7 @@ class PKCSession(_PKIMixin, httpx.Client):
         *,
         verify: VerifyTypes | None = None,
         **kwargs: Any,
-    ) -> PKCSession:
+    ) -> PKIClient:
         """Build a session from ``{prefix}*`` environment variables.
 
         Reads ``{prefix}CERT`` (required), ``{prefix}PASSWORD``, ``{prefix}KEY``
@@ -88,7 +88,7 @@ class PKCSession(_PKIMixin, httpx.Client):
         *,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> PKCSession:
+    ) -> PKIClient:
         """Build a session from a PKCS#12 bundle (path or bytes)."""
         material = parse_pkcs12(read_source(cert), encode_password(password))
         return cls._from_material(material, verify=verify, **kwargs)
@@ -101,7 +101,7 @@ class PKCSession(_PKIMixin, httpx.Client):
         *,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> PKCSession:
+    ) -> PKIClient:
         """Build a session from a single PEM blob holding the key and cert(s)."""
         material = parse_pem_bundle(read_source(source), encode_password(password))
         return cls._from_material(material, verify=verify, **kwargs)
@@ -116,7 +116,7 @@ class PKCSession(_PKIMixin, httpx.Client):
         chain: CertSource | list[CertSource] | None = None,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> PKCSession:
+    ) -> PKIClient:
         """Build a session from a separate certificate and private key.
 
         *certificate* is the client (leaf) certificate. Pass *chain* to present
@@ -137,7 +137,7 @@ class PKCSession(_PKIMixin, httpx.Client):
         location: str = "CurrentUser",
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> PKCSession:
+    ) -> PKIClient:
         """Build a session from an exportable certificate in the Windows store.
 
         Windows only. Selects the certificate by ``name`` (case-insensitive
@@ -161,14 +161,14 @@ class PKCSession(_PKIMixin, httpx.Client):
         return cls._from_material(parse_pkcs12(pfx, password), verify=verify, **kwargs)
 
 
-class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
+class AsyncPKIClient(_PKIMixin, httpx.AsyncClient):
     """
     An asynchronous :class:`httpx.AsyncClient` that presents a client cert.
 
-    The async counterpart of :class:`PKCSession`; the certificate, pickle, and
+    The async counterpart of :class:`PKIClient`; the certificate, pickle, and
     alternate-constructor behavior are identical::
 
-        async with AsyncPKCSession("client.p12", password="secret") as client:
+        async with AsyncPKIClient("client.p12", password="secret") as client:
             await client.get("https://mtls.example.com/")
     """
 
@@ -199,8 +199,8 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
         *,
         verify: VerifyTypes | None = None,
         **kwargs: Any,
-    ) -> AsyncPKCSession:
-        """Async counterpart of :meth:`PKCSession.from_env`."""
+    ) -> AsyncPKIClient:
+        """Async counterpart of :meth:`PKIClient.from_env`."""
         material, env_verify = resolve_env_material(prefix)
         return cls._from_material(
             material, verify=env_verify if verify is None else verify, **kwargs
@@ -214,7 +214,7 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
         *,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> AsyncPKCSession:
+    ) -> AsyncPKIClient:
         """Build a session from a PKCS#12 bundle (path or bytes)."""
         material = parse_pkcs12(read_source(cert), encode_password(password))
         return cls._from_material(material, verify=verify, **kwargs)
@@ -227,7 +227,7 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
         *,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> AsyncPKCSession:
+    ) -> AsyncPKIClient:
         """Build a session from a single PEM blob holding the key and cert(s)."""
         material = parse_pem_bundle(read_source(source), encode_password(password))
         return cls._from_material(material, verify=verify, **kwargs)
@@ -242,10 +242,10 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
         chain: CertSource | list[CertSource] | None = None,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> AsyncPKCSession:
+    ) -> AsyncPKIClient:
         """Build a session from a separate certificate and private key.
 
-        See :meth:`PKCSession.from_key_pair`; pass *chain* to present
+        See :meth:`PKIClient.from_key_pair`; pass *chain* to present
         intermediate certificates to the server.
         """
         material = normalize_pem(certificate, private_key, key_password, chain)
@@ -262,8 +262,8 @@ class AsyncPKCSession(_PKIMixin, httpx.AsyncClient):
         location: str = "CurrentUser",
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> AsyncPKCSession:
-        """Async counterpart of :meth:`PKCSession.from_windows_cert_store`."""
+    ) -> AsyncPKIClient:
+        """Async counterpart of :meth:`PKIClient.from_windows_cert_store`."""
         from ._winstore import load_windows_pkcs12
 
         pfx, password = load_windows_pkcs12(

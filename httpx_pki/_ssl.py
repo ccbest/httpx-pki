@@ -40,7 +40,7 @@ def build_ssl_context(
     """Build a client-certificate ``ssl.SSLContext`` from a cert source.
 
     A convenience for callers who want the SSL context without the
-    :class:`~httpx_pki.PKCSession` wrapper -- to mount on a plain
+    :class:`~httpx_pki.PKIClient` wrapper -- to mount on a plain
     :class:`httpx.Client`, an httpx transport, or any library that accepts an
     ``ssl.SSLContext``. *cert* is a PKCS#12 or PEM source (path or bytes; the
     encoding is detected from the content) and *verify* configures server trust

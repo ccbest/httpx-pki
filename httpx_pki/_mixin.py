@@ -25,6 +25,17 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+def _mount_shadows_tls(pattern: object) -> bool:
+    """Whether an httpx mount pattern would handle https traffic.
+
+    httpx mount keys look like ``"all://"``, ``"https://"``, or
+    ``"https://example.com"``. A mount shadows the client certificate only if it
+    intercepts https -- i.e. its scheme is ``https`` or the ``all`` wildcard.
+    """
+    scheme = str(pattern).split("://", 1)[0].lower()
+    return scheme in ("", "all", "https")
+
+
 class _PKIMixin:
     _material: Material
     _verify_policy: VerifyTypes
@@ -143,13 +154,18 @@ class _PKIMixin:
     def _warn_on_ignored_tls(self, kwargs: dict[str, Any]) -> None:
         """Warn that a custom transport makes httpx ignore the client cert.
 
-        When ``transport=`` or ``mounts=`` is supplied, httpx uses that transport
-        as-is and never consults the client-level ``verify=`` we mount the
-        certificate on -- so the cert is silently dropped and the mTLS handshake
-        fails far from here. The fix is to put the SSL context on the inner
-        transport (see :func:`~httpx_pki.build_ssl_context`), not the client.
+        When ``transport=`` is supplied, httpx uses that transport as-is and
+        never consults the client-level ``verify=`` we mount the certificate on
+        -- so the cert is silently dropped and the mTLS handshake fails far from
+        here. ``mounts=`` does the same, but only for the patterns it actually
+        handles: an ``http://``-only mount leaves the default https transport
+        (which *does* honor ``verify=``) in place, so we warn for a mount only
+        when it would shadow https traffic. The fix is to put the SSL context on
+        the inner transport (see :func:`~httpx_pki.build_ssl_context`).
         """
-        if kwargs.get("transport") is not None or kwargs.get("mounts"):
+        mounts = kwargs.get("mounts") or {}
+        shadows_tls = any(_mount_shadows_tls(pattern) for pattern in mounts)
+        if kwargs.get("transport") is not None or shadows_tls:
             warnings.warn(
                 "a custom transport=/mounts= makes httpx ignore verify=, so the "
                 "client certificate is NOT mounted on this session. Build the "

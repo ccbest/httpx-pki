@@ -6,16 +6,15 @@ PKCS#12 client-certificate (mTLS) sessions for [httpx](https://www.python-httpx.
 client certificate already mounted, so mutual-TLS endpoints "just work":
 
 ```python
-from httpx_pki import PKCSession
+from httpx_pki import PKIClient
 
-with PKCSession("client.p12", password="secret") as client:
+with PKIClient("client.p12", password="secret") as client:
     resp = client.get("https://mtls.example.com/")
     print(resp.status_code)
 ```
 
-Unlike helper-function approaches, the session is a real, **subclassable** class:
-it works as a context manager, and it is **picklable** so you can hand a
-preconfigured session across process boundaries.
+Unlike helper-function approaches, the session is a real, **subclassable** class that works
+
 
 #### Purpose
 
@@ -40,12 +39,12 @@ extension never matters:
 
 | Input | Constructor | Notes |
 | --- | --- | --- |
-| **PKCS#12** (`.p12`, `.pfx`, binary) | `PKCSession(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob |
-| **PEM bundle** (key + cert(s) in one file) | `PKCSession(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys |
+| **PKCS#12** (`.p12`, `.pfx`, binary) | `PKIClient(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob |
+| **PEM bundle** (key + cert(s) in one file) | `PKIClient(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys |
 | **Separate cert + key** (PEM *or* DER) | `from_key_pair(...)` | optional `chain=` intermediates |
 | **Windows cert store** | `from_windows_cert_store(...)` | Windows only; see below |
 
-`PKCSession(source, password=...)` auto-detects PKCS#12 vs PEM, so you can point
+`PKIClient(source, password=...)` auto-detects PKCS#12 vs PEM, so you can point
 it at whatever you were handed. Use the explicit `from_pkcs12` / `from_pem`
 constructors when you want to force one interpretation.
 
@@ -57,29 +56,29 @@ A path (`str` or `pathlib.Path`) or raw `bytes` both work:
 
 ```python
 from pathlib import Path
-from httpx_pki import PKCSession
+from httpx_pki import PKIClient
 
-PKCSession("client.p12", password="secret")          # path
-PKCSession(Path("client.pfx"), password="secret")     # pathlib.Path
-PKCSession(p12_bytes, password=b"secret")             # bytes; password may be bytes
+PKIClient("client.p12", password="secret")          # path
+PKIClient(Path("client.pfx"), password="secret")     # pathlib.Path
+PKIClient(p12_bytes, password=b"secret")             # bytes; password may be bytes
 ```
 
 ### From a PEM file (key + cert in one blob)
 
 ```python
-from httpx_pki import PKCSession
+from httpx_pki import PKIClient
 
-PKCSession("client.pem")                       # auto-detected
-PKCSession.from_pem("client.pem")              # explicit
-PKCSession.from_pem(pem_bytes, password="..")  # if the key block is encrypted
+PKIClient("client.pem")                       # auto-detected
+PKIClient.from_pem("client.pem")              # explicit
+PKIClient.from_pem(pem_bytes, password="..")  # if the key block is encrypted
 ```
 
 ### From a separate certificate and key
 
 ```python
-from httpx_pki import PKCSession
+from httpx_pki import PKIClient
 
-client = PKCSession.from_key_pair(
+client = PKIClient.from_key_pair(
     certificate="client.crt",
     private_key="client.key",
     key_password="secret",      # if the key is encrypted
@@ -95,9 +94,9 @@ user's personal store, selecting by a case-insensitive substring of the subject
 common name or the Windows "friendly name":
 
 ```python
-from httpx_pki import PKCSession
+from httpx_pki import PKIClient
 
-with PKCSession.from_windows_cert_store(name="ACME Client") as client:
+with PKIClient.from_windows_cert_store(name="ACME Client") as client:
     client.get("https://mtls.example.com/")
 ```
 
@@ -105,9 +104,9 @@ If several certificates match you'll get an `AmbiguousCertificateError` listing
 the candidates; narrow it with an exact thumbprint or a predicate:
 
 ```python
-PKCSession.from_windows_cert_store(thumbprint="A1:B2:C3:...")
-PKCSession.from_windows_cert_store(predicate=lambda c: c.friendly_name == "prod")
-PKCSession.from_windows_cert_store(name="ACME", location="LocalMachine")
+PKIClient.from_windows_cert_store(thumbprint="A1:B2:C3:...")
+PKIClient.from_windows_cert_store(predicate=lambda c: c.friendly_name == "prod")
+PKIClient.from_windows_cert_store(name="ACME", location="LocalMachine")
 ```
 
 Notes:
@@ -117,16 +116,16 @@ Notes:
   otherwise the export fails with a `CertificateLoadError`.
 - No password is involved: the cert is exported under a random, single-use
   password that never leaves the library.
-- `AsyncPKCSession.from_windows_cert_store(...)` is the async equivalent.
+- `AsyncPKIClient.from_windows_cert_store(...)` is the async equivalent.
 
 ### From environment variables
 
 For containerized / 12-factor deployments, configure the certificate out of band:
 
 ```python
-from httpx_pki import PKCSession
+from httpx_pki import PKIClient
 
-with PKCSession.from_env() as client:        # reads HTTPX_PKI_* by default
+with PKIClient.from_env() as client:        # reads HTTPX_PKI_* by default
     client.get("https://mtls.example.com/")
 ```
 
@@ -137,14 +136,14 @@ with PKCSession.from_env() as client:        # reads HTTPX_PKI_* by default
 | `HTTPX_PKI_KEY` | path to a separate private key; switches to cert+key mode |
 | `HTTPX_PKI_CA` | CA bundle for **server** trust (`verify=`) |
 
-Pass a different `prefix=` to namespace per service (`PKCSession.from_env("MYAPP_")`).
+Pass a different `prefix=` to namespace per service (`PKIClient.from_env("MYAPP_")`).
 
 ### Async
 
 ```python
-from httpx_pki import AsyncPKCSession
+from httpx_pki import AsyncPKIClient
 
-async with AsyncPKCSession("client.p12", password="secret") as client:
+async with AsyncPKIClient("client.p12", password="secret") as client:
     resp = await client.get("https://mtls.example.com/")
 ```
 
@@ -153,7 +152,7 @@ async with AsyncPKCSession("client.p12", password="secret") as client:
 Any extra keyword arguments flow straight through to the underlying httpx client:
 
 ```python
-PKCSession("client.p12", base_url="https://api.example.com",
+PKIClient("client.p12", base_url="https://api.example.com",
            headers={"User-Agent": "me"}, timeout=10.0, http2=True)
 ```
 
@@ -165,7 +164,7 @@ independent. `verify` behaves just like httpx — `True` (default, uses certifi)
 `ssl.SSLContext`:
 
 ```python
-PKCSession("client.p12", verify="/etc/ssl/custom-ca.pem")
+PKIClient("client.p12", verify="/etc/ssl/custom-ca.pem")
 ```
 
 > **Passing your own `ssl.SSLContext`?** `httpx-pki` loads the client certificate
@@ -177,7 +176,7 @@ PKCSession("client.p12", verify="/etc/ssl/custom-ca.pem")
 ### Subclassing
 
 ```python
-class MyServiceSession(PKCSession):
+class MyServiceSession(PKIClient):
     def __init__(self, p12, **kwargs):
         super().__init__(p12, base_url="https://service.internal", **kwargs)
 
@@ -190,7 +189,11 @@ class MyServiceSession(PKCSession):
 ```python
 info = client.cert_info()
 print(info.common_name, info.not_after, info.subject_alt_names)
+print(info.dns_names)  # just the dNSName SANs, for hostname checks
 ```
+
+`subject_alt_names` lists every SAN entry as a string (DNS names, IP addresses,
+email addresses, URIs); `dns_names` is the dNSName subset.
 
 ### Expiry awareness
 
@@ -210,9 +213,9 @@ and call `check_validity()` to turn "not currently usable" into a hard error:
 
 ```python
 from datetime import timedelta
-from httpx_pki import PKCSession, CertificateExpiredError
+from httpx_pki import PKIClient, CertificateExpiredError
 
-client = PKCSession("client.p12", password="secret",
+client = PKIClient("client.p12", password="secret",
                     warn_if_expires_within=timedelta(days=14))
 
 client.check_validity()                       # raises if expired / not yet valid
@@ -265,14 +268,14 @@ resp = client.get("https://mtls.example.com/")
 ```python
 # ❌ DOES NOT mount the cert — the custom transport makes httpx ignore verify=,
 #    so no client certificate is presented and the handshake fails.
-from httpx_pki import PKCSession
+from httpx_pki import PKIClient
 from httpx_retries import RetryTransport
 
-client = PKCSession("client.p12", password="secret",
+client = PKIClient("client.p12", password="secret",
                     transport=RetryTransport())       # cert silently dropped!
 ```
 
-If you specifically want your `PKCSession` *subclass* (its methods, `base_url`,
+If you specifically want your `PKIClient` *subclass* (its methods, `base_url`,
 `cert_info()`, ...) **and** retries, give that subclass the same inner transport.
 Its own `verify=` is ignored (the transport wins), but the rest of its behavior
 is preserved:
@@ -280,7 +283,7 @@ is preserved:
 ```python
 ctx = build_ssl_context("client.p12", password="secret")
 inner = httpx.HTTPTransport(verify=ctx)
-client = PKCSession("client.p12", password="secret",
+client = PKIClient("client.p12", password="secret",
                     transport=RetryTransport(transport=inner, retry=Retry(total=5)))
 ```
 
@@ -300,13 +303,13 @@ an opaque OpenSSL handshake error.
 have to re-derive the `cryptography` boilerplate:
 
 ```python
-from httpx_pki import PKCSession
+from httpx_pki import PKIClient
 from httpx_pki.testing import make_ca, make_client_cert
 
 ca = make_ca()
 bundle = make_client_cert("svc-client", ca=ca, dns_names=["svc.internal"])
 
-with PKCSession(bundle.pkcs12(), password=b"") as client:
+with PKIClient(bundle.pkcs12(), password=b"") as client:
   assert client.cn == "svc-client"
 
 expired = make_client_cert("old", ca=ca, expired=True)  # for expiry tests
