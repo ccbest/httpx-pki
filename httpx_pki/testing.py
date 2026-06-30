@@ -110,6 +110,9 @@ def make_ca(common_name: str = "httpx-pki test CA") -> CertBundle:
         .not_valid_before(_utcnow() - datetime.timedelta(days=1))
         .not_valid_after(_utcnow() + datetime.timedelta(days=3650))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+        )
         .sign(key, hashes.SHA256())
     )
     return CertBundle(key=key, cert=cert)
@@ -152,6 +155,15 @@ def make_client_cert(  # pylint: disable=too-many-arguments
         .serial_number(x509.random_serial_number())
         .not_valid_before(not_before)
         .not_valid_after(not_after)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                (ca.key if ca is not None else key).public_key()
+            ),
+            critical=False,
+        )
     )
 
     sans: list[x509.GeneralName] = [x509.DNSName(n) for n in (dns_names or [])]
