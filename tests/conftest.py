@@ -99,6 +99,20 @@ def _sign(
             x509.AuthorityKeyIdentifier.from_issuer_public_key(ca.key.public_key()),
             critical=False,
         )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
     )
     if sans:
         builder = builder.add_extension(

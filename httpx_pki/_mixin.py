@@ -14,8 +14,10 @@ import ssl
 import warnings
 from typing import Any, TypeVar
 
+from cryptography import x509
+
 from ._exceptions import CertificateExpiredError, CertificateNotYetValidError
-from ._material import CertInfo, Material, cert_info
+from ._material import CertInfo, Material, _load_certificate, cert_info
 from ._ssl import VerifyTypes, _context_from_material
 
 _S = TypeVar("_S", bound="_PKIMixin")
@@ -44,6 +46,9 @@ class _PKIMixin:
     # caching it is invisible (the time-dependent checks recompute "now"
     # separately) and spares every cn/dn/validity access a fresh PEM parse.
     _certinfo: CertInfo
+    # The client-certificate SSL context mounted on the default transport, kept
+    # so ssl_context hands back the very object in use rather than a rebuild.
+    _ssl_context: ssl.SSLContext
 
     def _httpx_init(self, *, verify: ssl.SSLContext, **kwargs: Any) -> None:
         """Forward to the concrete httpx base class. Overridden per client."""
@@ -70,8 +75,8 @@ class _PKIMixin:
         self._certinfo = cert_info(material.cert_pem)
         self._warn_on_ignored_tls(kwargs)
         self._warn_on_validity(warn_if_expires_within)
-        context = _context_from_material(material, verify)
-        self._httpx_init(verify=context, **kwargs)
+        self._ssl_context = _context_from_material(material, verify)
+        self._httpx_init(verify=self._ssl_context, **kwargs)
 
     @classmethod
     def _from_material(
@@ -205,6 +210,39 @@ class _PKIMixin:
     def cert_info(self) -> CertInfo:
         """Return subject, validity window, and SANs of the client certificate."""
         return self._certinfo
+
+    @property
+    def certificate(self) -> x509.Certificate:
+        """The client (leaf) certificate as a :class:`cryptography.x509.Certificate`.
+
+        Use this for anything :meth:`cert_info` doesn't summarize -- most often
+        reading extensions, e.g.::
+
+            ku = client.certificate.extensions.get_extension_for_class(
+                x509.KeyUsage
+            ).value
+            if ku.digital_signature or ku.key_encipherment:
+                ...
+
+        A fresh object is parsed from the stored PEM on each access.
+        """
+        return _load_certificate(self._material.cert_pem)
+
+    @property
+    def ssl_context(self) -> ssl.SSLContext:
+        """The client-certificate :class:`ssl.SSLContext` mounted on this session.
+
+        This is the exact context httpx-pki built from the certificate material
+        and the ``verify`` policy, and mounted on the default transport -- not a
+        copy. Reuse it when building your own httpx transports so they present
+        the same client certificate, e.g. a per-proxy transport::
+
+            transport = httpx.HTTPTransport(verify=client.ssl_context, proxy=url)
+
+        A transport built without it silently drops the client cert and the mTLS
+        handshake fails.
+        """
+        return self._ssl_context
 
     @property
     def cn(self) -> str | None:

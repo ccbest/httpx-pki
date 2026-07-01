@@ -139,6 +139,33 @@ def test_cert_info_san_types() -> None:
     assert "10.0.0.5" in info.subject_alt_names  # IP SANs no longer dropped
 
 
+def test_certificate_property_exposes_extensions(client_p12: bytes) -> None:
+    # The certificate property returns a cryptography x509 object, giving access
+    # to extensions (like Key Usage) that cert_info does not summarize.
+    from cryptography import x509
+
+    with PKIClient(client_p12, password=P12_PASSWORD) as session:
+        cert = session.certificate
+        assert isinstance(cert, x509.Certificate)
+        assert cert.subject.rfc4514_string() == f"CN={CLIENT_CN}"
+        ku = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+        assert ku.digital_signature
+        assert ku.key_encipherment
+
+
+def test_ssl_context_is_the_mounted_context(client_p12: bytes) -> None:
+    # ssl_context returns the very object mounted on the default transport (not a
+    # rebuild), so custom transports can present the same client certificate.
+    with PKIClient(client_p12, password=P12_PASSWORD) as session:
+        ctx = session.ssl_context
+        assert isinstance(ctx, ssl.SSLContext)
+        assert ctx is session.ssl_context
+        # httpx wraps the context in the default transport's SSL config; it's the
+        # same object we handed to verify=.
+        transport = session._transport_for_url(httpx.URL("https://example.com"))
+        assert transport._pool._ssl_context is ctx
+
+
 def test_cn_and_dn_properties(client_p12: bytes) -> None:
     with PKIClient(client_p12, password=P12_PASSWORD) as session:
         assert session.cn == CLIENT_CN
