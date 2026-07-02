@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "httpx-pki"
-version = "0.1.0"
+version = "0.2.0"
 description = "PKCS#12 client-certificate (mTLS) sessions for httpx"
 readme = "README.md"
 requires-python = ">=3.10"
