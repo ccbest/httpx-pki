@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
@@ -32,9 +32,13 @@ jobs:
       - name: Mypy
         if: runner.os == 'Linux'
         run: mypy httpx_pki
-      # Run the suite on both OSes -- this is what imports the crypt32 ctypes
-      # module and exercises the Windows-store selection logic on Windows.
+      # Run the suite on all three OSes -- Windows exercises the crypt32 ctypes
+      # module, and macOS (opted in via HTTPX_PKI_KEYCHAIN_TESTS, so developer
+      # Macs are never touched implicitly) provisions a throwaway keychain and
+      # exercises the Security-framework path end to end.
       - name: Pytest (coverage)
+        env:
+          HTTPX_PKI_KEYCHAIN_TESTS: ${{ runner.os == 'macOS' && '1' || '' }}
         run: pytest -q --cov=httpx_pki --cov-report=term-missing --cov-report=xml --cov-fail-under=80
       # Upload from a single representative job: the platform-specific winstore
       # code is pragma-excluded, so every matrix cell reports the same lines --

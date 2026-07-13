@@ -17,6 +17,7 @@ from pathlib import Path
 import certifi
 
 from ._exceptions import CertificateLoadError
+from ._keychain import MacPredicate
 from ._material import (
     CertSource,
     Material,
@@ -91,6 +92,37 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
         predicate=predicate,
         store=store,
         location=location,
+    )
+    return _context_from_material(parse_pkcs12(pfx, password), verify)
+
+
+def build_macos_ssl_context(
+    name: str | None = None,
+    *,
+    thumbprint: str | None = None,
+    predicate: MacPredicate | None = None,
+    verify: VerifyTypes = True,
+) -> ssl.SSLContext:
+    """Build a client-certificate ``ssl.SSLContext`` from the macOS keychain.
+
+    The :func:`build_ssl_context` counterpart of
+    :meth:`~httpx_pki.PKIClient.from_macos_keychain`: it selects an exportable
+    identity from the default keychain search list -- by ``name``
+    (case-insensitive substring of the subject common name or keychain label),
+    ``thumbprint``, or a ``predicate`` callable -- and returns the
+    ``ssl.SSLContext`` presenting it, with server trust configured by *verify*
+    exactly like httpx.
+
+    macOS only; see :meth:`~httpx_pki.PKIClient.from_macos_keychain` for the
+    errors raised.
+
+        ctx = build_macos_ssl_context(name="ACME Client")
+        transport = httpx.HTTPTransport(verify=ctx)
+    """
+    from ._keychain import load_macos_pkcs12
+
+    pfx, password = load_macos_pkcs12(
+        name=name, thumbprint=thumbprint, predicate=predicate
     )
     return _context_from_material(parse_pkcs12(pfx, password), verify)
 

@@ -9,6 +9,7 @@ from typing import Any, TypeVar
 import httpx
 
 from ._env import resolve_env_material
+from ._keychain import MacPredicate
 from ._material import (
     CertSource,
     Password,
@@ -194,6 +195,48 @@ class PKIClient(_PKIMixin, httpx.Client):
                 encoded,
             ),
             auto_reload=auto_reload,
+            strict_validity=strict_validity,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_macos_keychain(
+        cls: type[_C],
+        name: str | None = None,
+        *,
+        thumbprint: str | None = None,
+        predicate: MacPredicate | None = None,
+        verify: VerifyTypes = True,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _C:
+        """Build a session from an exportable identity in the macOS keychain.
+
+        macOS only. Selects the identity from the default keychain search list
+        by ``name`` (case-insensitive substring of the subject common name or
+        keychain label), or unambiguously by ``thumbprint`` or a ``predicate``
+        callable. The private key must be exportable, and the keychain must
+        not require an interactive consent prompt (provision with
+        ``security import ... -A`` or "Always Allow" for unattended use).
+        :meth:`reload` re-exports from the keychain with the same selector
+        (there is no file to watch, so ``auto_reload`` is not available).
+
+        Raises :class:`~httpx_pki.UnsupportedPlatformError` off macOS,
+        :class:`~httpx_pki.CertificateNotFoundError` if nothing matches, and
+        :class:`~httpx_pki.AmbiguousCertificateError` if several do.
+        """
+        from ._keychain import load_macos_pkcs12
+
+        selector: dict[str, Any] = {
+            "name": name,
+            "thumbprint": thumbprint,
+            "predicate": predicate,
+        }
+        pfx, password = load_macos_pkcs12(**selector)
+        return cls._from_material(
+            parse_pkcs12(pfx, password),
+            verify=verify,
+            source=SourceRef("macos_keychain", selector),
             strict_validity=strict_validity,
             **kwargs,
         )
@@ -385,6 +428,34 @@ class AsyncPKIClient(_PKIMixin, httpx.AsyncClient):
                 encoded,
             ),
             auto_reload=auto_reload,
+            strict_validity=strict_validity,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_macos_keychain(
+        cls: type[_A],
+        name: str | None = None,
+        *,
+        thumbprint: str | None = None,
+        predicate: MacPredicate | None = None,
+        verify: VerifyTypes = True,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _A:
+        """Async counterpart of :meth:`PKIClient.from_macos_keychain`."""
+        from ._keychain import load_macos_pkcs12
+
+        selector: dict[str, Any] = {
+            "name": name,
+            "thumbprint": thumbprint,
+            "predicate": predicate,
+        }
+        pfx, password = load_macos_pkcs12(**selector)
+        return cls._from_material(
+            parse_pkcs12(pfx, password),
+            verify=verify,
+            source=SourceRef("macos_keychain", selector),
             strict_validity=strict_validity,
             **kwargs,
         )

@@ -47,7 +47,9 @@ class SourceRef:
     password: bytes | None = None
 
 
-def resolve_source(ref: SourceRef, password: bytes | None = None) -> Material:
+def resolve_source(  # pylint: disable=too-many-return-statements
+    ref: SourceRef, password: bytes | None = None
+) -> Material:
     """Load fresh material from *ref*, exactly as the constructor did.
 
     An explicit *password* overrides the one retained on the ref. The ``env``
@@ -75,6 +77,11 @@ def resolve_source(ref: SourceRef, password: bytes | None = None) -> Material:
         from ._winstore import load_windows_pkcs12
 
         pfx, pfx_password = load_windows_pkcs12(**args)
+        return parse_pkcs12(pfx, pfx_password)
+    if ref.kind == "macos_keychain":
+        from ._keychain import load_macos_pkcs12
+
+        pfx, pfx_password = load_macos_pkcs12(**args)
         return parse_pkcs12(pfx, pfx_password)
     raise ValueError(f"unknown source kind {ref.kind!r}")
 
@@ -107,7 +114,7 @@ def watch_paths(ref: SourceRef) -> list[Path]:
         candidates = [
             os.environ.get(f"{prefix}{name}") for name in ("CERT", "KEY", "CHAIN")
         ]
-    else:  # winstore -- nothing on disk to watch
+    else:  # winstore / macos_keychain -- nothing on disk to watch
         return []
     return [Path(c) for c in candidates if isinstance(c, (str, Path))]
 
@@ -115,11 +122,11 @@ def watch_paths(ref: SourceRef) -> list[Path]:
 def is_reloadable(ref: SourceRef) -> bool:
     """Whether :func:`resolve_source` can produce anything new for *ref*.
 
-    ``env`` and ``winstore`` sources always re-resolve; path-based sources
+    ``env`` and platform-store sources always re-resolve; path-based sources
     re-read their files. A source built purely from in-memory bytes has
     nothing to re-read.
     """
-    if ref.kind in ("env", "winstore"):
+    if ref.kind in ("env", "winstore", "macos_keychain"):
         return True
     return bool(watch_paths(ref))
 
