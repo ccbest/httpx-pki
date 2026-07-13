@@ -13,13 +13,20 @@ from ._exceptions import (
     UnsupportedPlatformError,
 )
 from ._material import CertInfo, Material, cert_info
-from ._ssl import build_ssl_context
-from ._winstore import WinCert
+from ._ssl import build_ssl_context, build_windows_ssl_context
+from ._winstore import (
+    WinCert,
+    list_windows_certificates,
+    select_windows_certificate,
+)
 
 __all__ = [
     "PKIClient",
     "AsyncPKIClient",
     "build_ssl_context",
+    "build_windows_ssl_context",
+    "list_windows_certificates",
+    "select_windows_certificate",
     "PKIError",
     "CertificateLoadError",
     "CertificateExpiredError",

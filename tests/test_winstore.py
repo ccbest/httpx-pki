@@ -22,9 +22,13 @@ from httpx_pki import (
 from httpx_pki._winstore import (
     WinCert as WinCertModule,
 )
+from httpx_pki import (
+    build_windows_ssl_context,
+    list_windows_certificates,
+)
 from httpx_pki._winstore import (
     load_windows_pkcs12,
-    select_certificate,
+    select_windows_certificate,
 )
 from tests.conftest import CLIENT_CN, Signed
 
@@ -45,26 +49,26 @@ def test_import_safety() -> None:
 
 
 def test_select_by_substring_cn() -> None:
-    chosen = select_certificate(CANDIDATES, name="prod")
+    chosen = select_windows_certificate(CANDIDATES, name="prod")
     assert chosen.thumbprint == "AA11BB"
 
 
 def test_select_by_substring_friendly_name() -> None:
-    chosen = select_certificate(CANDIDATES, name="dev cert")
+    chosen = select_windows_certificate(CANDIDATES, name="dev cert")
     assert chosen.subject_cn == "ACME Dev Client"
 
 
 def test_select_is_case_insensitive() -> None:
-    assert select_certificate(CANDIDATES, name="UNRELATED").thumbprint == "EE33FF"
+    assert select_windows_certificate(CANDIDATES, name="UNRELATED").thumbprint == "EE33FF"
 
 
 def test_select_by_thumbprint_with_separators() -> None:
-    chosen = select_certificate(CANDIDATES, thumbprint="cc:22:dd")
+    chosen = select_windows_certificate(CANDIDATES, thumbprint="cc:22:dd")
     assert chosen.subject_cn == "ACME Dev Client"
 
 
 def test_select_by_predicate() -> None:
-    chosen = select_certificate(
+    chosen = select_windows_certificate(
         CANDIDATES, predicate=lambda c: c.friendly_name == "prod"
     )
     assert chosen.thumbprint == "AA11BB"
@@ -72,17 +76,17 @@ def test_select_by_predicate() -> None:
 
 def test_select_no_selector_single_candidate() -> None:
     only = [CANDIDATES[0]]
-    assert select_certificate(only) is only[0]
+    assert select_windows_certificate(only) is only[0]
 
 
 def test_select_not_found() -> None:
     with pytest.raises(CertificateNotFoundError, match="missing"):
-        select_certificate(CANDIDATES, name="missing")
+        select_windows_certificate(CANDIDATES, name="missing")
 
 
 def test_select_ambiguous_lists_candidates() -> None:
     with pytest.raises(AmbiguousCertificateError) as exc:
-        select_certificate(CANDIDATES, name="acme")
+        select_windows_certificate(CANDIDATES, name="acme")
     message = str(exc.value)
     assert "ACME Prod Client" in message
     assert "ACME Dev Client" in message
@@ -91,13 +95,62 @@ def test_select_ambiguous_lists_candidates() -> None:
 
 def test_select_no_selector_multiple_is_ambiguous() -> None:
     with pytest.raises(AmbiguousCertificateError):
-        select_certificate(CANDIDATES)
+        select_windows_certificate(CANDIDATES)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="tests the non-Windows guard")
 def test_load_raises_on_non_windows() -> None:
     with pytest.raises(UnsupportedPlatformError):
         load_windows_pkcs12(name="anything")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="tests the non-Windows guard")
+def test_list_raises_on_non_windows() -> None:
+    with pytest.raises(UnsupportedPlatformError):
+        list_windows_certificates()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="tests the non-Windows guard")
+def test_build_windows_ssl_context_raises_on_non_windows() -> None:
+    with pytest.raises(UnsupportedPlatformError):
+        build_windows_ssl_context(name="anything")
+
+
+def test_list_windows_certificates_mocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The enumerated contexts carry live handles; the listing must hand back
+    # metadata-only copies (handle=None) and free every enumerated handle.
+    fake = _FakeCrypt32()
+    a = WinCert("ACME Prod", "prod", "AA", handle=1)
+    b = WinCert("ACME Dev", "dev", "BB", handle=2)
+    monkeypatch.setattr(winstore, "_enumerate_store", lambda store, location: [a, b])
+    monkeypatch.setattr(winstore, "_load_crypt32", lambda: fake)
+    monkeypatch.setattr(winstore.sys, "platform", "win32")
+
+    listed = list_windows_certificates()
+
+    assert [c.thumbprint for c in listed] == ["AA", "BB"]
+    assert all(c.handle is None for c in listed)
+    assert sorted(fake.freed) == [1, 2]
+
+
+def test_build_windows_ssl_context_mocked(
+    monkeypatch: pytest.MonkeyPatch, client_p12: bytes
+) -> None:
+    import ssl
+
+    fake = WinCert(subject_cn=CLIENT_CN, friendly_name="internal", thumbprint="DEAD")
+    monkeypatch.setattr(winstore, "_enumerate_store", lambda store, location: [fake])
+
+    def fake_export(cert: WinCert) -> tuple[bytes, bytes]:
+        from tests.conftest import P12_PASSWORD
+
+        return client_p12, P12_PASSWORD.encode()
+
+    monkeypatch.setattr(winstore, "_export_pfx", fake_export)
+    monkeypatch.setattr(winstore.sys, "platform", "win32")
+
+    ctx = build_windows_ssl_context(predicate=lambda c: "internal" in c.friendly_name)
+    assert isinstance(ctx, ssl.SSLContext)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="tests the non-Windows guard")

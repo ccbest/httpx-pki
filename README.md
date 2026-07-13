@@ -116,6 +116,17 @@ PKIClient.from_windows_cert_store(predicate=lambda c: c.friendly_name == "prod")
 PKIClient.from_windows_cert_store(name="ACME", location="LocalMachine")
 ```
 
+To see what's in the store before selecting, `list_windows_certificates()`
+returns a `WinCert` (subject CN, friendly name, thumbprint) for each certificate
+— metadata only, no key is exported:
+
+```python
+from httpx_pki import list_windows_certificates
+
+for c in list_windows_certificates():        # location="LocalMachine" for the machine store
+    print(c.friendly_name, c.subject_cn, c.thumbprint)
+```
+
 Notes:
 
 - **Windows only** — calling it elsewhere raises `UnsupportedPlatformError`.
@@ -243,6 +254,17 @@ from httpx_pki import build_ssl_context
 
 ctx = build_ssl_context("client.p12", password="secret")
 client = httpx.Client(verify=ctx)
+```
+
+`build_windows_ssl_context` is the same seam for the Windows store — it selects a
+certificate exactly like `from_windows_cert_store` (`name` / `thumbprint` /
+`predicate`) but hands back the `ssl.SSLContext` instead of a session, so you can
+mount a store cert on your own transport without building a client first:
+
+```python
+from httpx_pki import build_windows_ssl_context
+
+ctx = build_windows_ssl_context(predicate=lambda c: c.friendly_name == "prod")
 ```
 
 ### Custom transports (e.g. `httpx-retries`)

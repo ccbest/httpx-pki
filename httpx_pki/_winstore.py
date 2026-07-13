@@ -4,7 +4,7 @@
 Everything Windows-specific (``ctypes`` against ``crypt32.dll``) lives inside
 functions guarded by a ``sys.platform`` check, so importing this module is safe
 on every platform and adds no dependency. The only platform-independent piece is
-:func:`select_certificate`, which is pure and unit-tested everywhere.
+:func:`select_windows_certificate`, which is pure and unit-tested everywhere.
 
 The flow is: enumerate the personal ("MY") store, pick the matching certificate,
 and export it -- private key included -- to PKCS#12 bytes under a random,
@@ -18,7 +18,7 @@ from __future__ import annotations
 import secrets
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ._exceptions import (
@@ -49,7 +49,7 @@ def _normalize_thumbprint(value: str) -> str:
     return value.replace(":", "").replace(" ", "").upper()
 
 
-def select_certificate(
+def select_windows_certificate(
     candidates: list[WinCert],
     *,
     name: str | None = None,
@@ -111,6 +111,30 @@ def _selector_repr(
     return "no selector"
 
 
+def list_windows_certificates(
+    *, store: str = "MY", location: str = "CurrentUser"
+) -> list[WinCert]:
+    """List the certificates in a Windows certificate store.
+
+    Returns a :class:`WinCert` for each certificate in *store* under *location*
+    (``"CurrentUser"`` or ``"LocalMachine"``), carrying its subject common name,
+    Windows friendly name, and SHA-1 thumbprint -- enough to pick the right one
+    by whatever convention your organization follows, without exporting any
+    private key. Feed the result to :func:`select_windows_certificate`, or filter it
+    yourself and pass a ``thumbprint`` to a session constructor.
+
+    The returned objects hold no live handle (every enumerated context is freed
+    before returning), so there is nothing for the caller to release.
+
+    Windows only; raises :class:`~httpx_pki.UnsupportedPlatformError` elsewhere.
+    """
+    candidates = _enumerate_store(store, location)
+    try:
+        return [replace(c, handle=None) for c in candidates]
+    finally:
+        _free_contexts(candidates)
+
+
 def load_windows_pkcs12(
     *,
     name: str | None = None,
@@ -127,7 +151,7 @@ def load_windows_pkcs12(
     candidates = _enumerate_store(store, location)
     keep: WinCert | None = None
     try:
-        keep = select_certificate(
+        keep = select_windows_certificate(
             candidates, name=name, thumbprint=thumbprint, predicate=predicate
         )
         return _export_pfx(keep)

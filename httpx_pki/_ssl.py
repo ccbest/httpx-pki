@@ -17,12 +17,14 @@ from pathlib import Path
 import certifi
 
 from ._exceptions import CertificateLoadError
+from ._winstore import Predicate
 from ._material import (
     CertSource,
     Material,
     Password,
     encode_password,
     load_material,
+    parse_pkcs12,
     read_source,
 )
 
@@ -51,6 +53,44 @@ def build_ssl_context(
     """
     material = load_material(read_source(cert), encode_password(password))
     return _context_from_material(material, verify)
+
+
+def build_windows_ssl_context(  # pylint: disable=too-many-arguments
+    name: str | None = None,
+    *,
+    thumbprint: str | None = None,
+    predicate: Predicate | None = None,
+    store: str = "MY",
+    location: str = "CurrentUser",
+    verify: VerifyTypes = True,
+) -> ssl.SSLContext:
+    """Build a client-certificate ``ssl.SSLContext`` from the Windows store.
+
+    The :func:`build_ssl_context` counterpart of
+    :meth:`~httpx_pki.PKIClient.from_windows_cert_store`: it selects an
+    exportable certificate from the store -- by ``name`` (case-insensitive
+    substring of the subject common name or friendly name), ``thumbprint``, or a
+    ``predicate`` callable -- and returns the ``ssl.SSLContext`` presenting it,
+    with server trust configured by *verify* exactly like httpx.
+
+    Use it to mount a store certificate on a transport or a routing layer
+    without building a whole :class:`~httpx_pki.PKIClient` just to read its
+    ``ssl_context``. Windows only; see
+    :meth:`~httpx_pki.PKIClient.from_windows_cert_store` for the errors raised.
+
+        ctx = build_windows_ssl_context(predicate=lambda c: "Internal" in (c.friendly_name or ""))
+        transport = httpx.HTTPTransport(verify=ctx)
+    """
+    from ._winstore import load_windows_pkcs12
+
+    pfx, password = load_windows_pkcs12(
+        name=name,
+        thumbprint=thumbprint,
+        predicate=predicate,
+        store=store,
+        location=location,
+    )
+    return _context_from_material(parse_pkcs12(pfx, password), verify)
 
 
 def _context_from_material(
