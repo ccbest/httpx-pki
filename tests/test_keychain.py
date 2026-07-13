@@ -15,7 +15,7 @@ import sys
 from collections.abc import Iterator
 
 import pytest
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
 
 import httpx_pki._keychain as keychain
@@ -256,9 +256,17 @@ requires_keychain = pytest.mark.skipif(
 
 
 def _security(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["security", *args], check=check, capture_output=True, text=True
+    proc = subprocess.run(
+        ["security", *args], check=False, capture_output=True, text=True
     )
+    if check and proc.returncode != 0:
+        # Surface stderr: CalledProcessError alone shows only the argv, which
+        # makes CI failures undiagnosable.
+        raise RuntimeError(
+            f"security {' '.join(args)} failed "
+            f"({proc.returncode}): {proc.stderr.strip()}"
+        )
+    return proc
 
 
 @pytest.fixture(scope="session")
@@ -273,6 +281,16 @@ def keychain_identity(
     search list for the session and fully removed afterwards.
     """
     signed = _sign(ca, KEYCHAIN_CN)
+    # macOS `security import` cannot read a PKCS#12 encrypted with the modern
+    # AES/PBKDF2 defaults (BestAvailableEncryption); use the legacy 3DES/SHA-1
+    # PBE the Security framework understands.
+    legacy_encryption = (
+        serialization.PrivateFormat.PKCS12.encryption_builder()
+        .kdf_rounds(50_000)
+        .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC)
+        .hmac_hash(hashes.SHA1())
+        .build(b"p12pw")
+    )
     p12_path = tmp_path_factory.mktemp("keychain") / "client.p12"
     p12_path.write_bytes(
         pkcs12.serialize_key_and_certificates(
@@ -280,7 +298,7 @@ def keychain_identity(
             key=signed.key,
             cert=signed.cert,
             cas=None,
-            encryption_algorithm=serialization.BestAvailableEncryption(b"p12pw"),
+            encryption_algorithm=legacy_encryption,
         )
     )
     kc_path = tmp_path_factory.mktemp("keychain") / "httpx-pki-test.keychain-db"
