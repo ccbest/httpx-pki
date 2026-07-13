@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "httpx-pki"
-version = "0.2.0"
 description = "PKCS#12 client-certificate (mTLS) sessions for httpx"
+dynamic = ["version"]
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -50,6 +50,9 @@ packages = ["httpx_pki"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "httpx_pki/py.typed" = "httpx_pki/py.typed"
+
+[tool.hatch.version]
+path = "httpx_pki/__init__.py"
 
 [tool.ruff]
 line-length = 88

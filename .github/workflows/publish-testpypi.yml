@@ -21,24 +21,24 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The version is single-sourced from __version__ in httpx_pki/__init__.py
+      # (pyproject declares it dynamic and hatchling reads it from there).
       - name: Stamp a unique dev version
         run: |
           python - <<'PY'
           import os, pathlib, re
           run = os.environ["GITHUB_RUN_NUMBER"]
-          path = pathlib.Path("pyproject.toml")
+          path = pathlib.Path("httpx_pki/__init__.py")
           text = path.read_text()
-          # Only the [project] version line begins with "version" at column 0;
-          # ruff's "target-version" does not, so this rewrite leaves it alone.
           text, n = re.subn(
-              r'(?m)^(version\s*=\s*")([^"]+)(")',
+              r'(?m)^(__version__ = ")([^"]+)(")',
               lambda m: f"{m.group(1)}{m.group(2)}.dev{run}{m.group(3)}",
               text,
               count=1,
           )
-          assert n == 1, "could not find the project version line"
+          assert n == 1, "could not find the __version__ line"
           path.write_text(text)
-          print("stamped:", re.search(r'(?m)^version\s*=.*', text).group(0))
+          print("stamped:", re.search(r'(?m)^__version__ = .*', text).group(0))
           PY
 
       - name: Build sdist and wheel
