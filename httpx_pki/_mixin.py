@@ -10,17 +10,40 @@ base class. This keeps the sync and async clients in lockstep and lets
 from __future__ import annotations
 
 import datetime
+import pickle
 import ssl
+import threading
+import time
 import warnings
+from pathlib import Path
 from typing import Any, TypeVar
 
 from cryptography import x509
 
 from ._exceptions import CertificateExpiredError, CertificateNotYetValidError
-from ._material import CertInfo, Material, _load_certificate, cert_info
-from ._ssl import VerifyTypes, _context_from_material
+from ._material import (
+    CertInfo,
+    Material,
+    Password,
+    _load_certificate,
+    cert_info,
+    encode_password,
+)
+from ._source import (
+    SourceRef,
+    WatchSignature,
+    is_reloadable,
+    resolve_source,
+    stat_signature,
+    watch_paths,
+)
+from ._ssl import VerifyTypes, _context_from_material, _load_client_cert
 
 _S = TypeVar("_S", bound="_PKIMixin")
+
+# Throttle for auto_reload=True: how often (at most) the source files are
+# stat'ed before a request.
+_DEFAULT_RELOAD_INTERVAL = datetime.timedelta(seconds=1)
 
 
 def _utcnow() -> datetime.datetime:
@@ -38,7 +61,7 @@ def _mount_shadows_tls(pattern: object) -> bool:
     return scheme in ("", "all", "https")
 
 
-class _PKIMixin:
+class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     _material: Material
     _verify_policy: VerifyTypes
     _httpx_kwargs: dict[str, Any]
@@ -48,18 +71,34 @@ class _PKIMixin:
     _certinfo: CertInfo
     # The client-certificate SSL context mounted on the default transport, kept
     # so ssl_context hands back the very object in use rather than a rebuild.
+    # reload() mutates this object in place (load_cert_chain replaces the cert
+    # for future handshakes), which is what propagates a rotated certificate to
+    # every transport holding the context.
     _ssl_context: ssl.SSLContext
+    # Rotation state: where the material came from (None only for pre-0.4
+    # pickles), the auto-reload throttle (None = disabled), and the stat
+    # fingerprint of the watched source files.
+    _source: SourceRef | None
+    _auto_reload: datetime.timedelta | None
+    _strict_validity: bool
+    _reload_lock: threading.Lock
+    _watch_paths: list[Path]
+    _watch_sig: WatchSignature
+    _next_check: float
 
     def _httpx_init(self, *, verify: ssl.SSLContext, **kwargs: Any) -> None:
         """Forward to the concrete httpx base class. Overridden per client."""
         raise NotImplementedError
 
-    def _apply_material(
+    def _apply_material(  # pylint: disable=too-many-arguments
         self,
         material: Material,
         *,
         verify: VerifyTypes = True,
         warn_if_expires_within: datetime.timedelta | None = None,
+        source: SourceRef | None = None,
+        auto_reload: bool | datetime.timedelta = False,
+        strict_validity: bool = False,
         **kwargs: Any,
     ) -> None:
         if "cert" in kwargs:
@@ -69,22 +108,61 @@ class _PKIMixin:
                 "and it would collide with the SSL context httpx-pki mounts on "
                 "verify=."
             )
+        # timedelta(0) means "check on every request", so test identity/type,
+        # not truthiness (bool(timedelta(0)) is False).
+        if isinstance(auto_reload, datetime.timedelta):
+            interval: datetime.timedelta | None = auto_reload
+        elif auto_reload is True:
+            interval = _DEFAULT_RELOAD_INTERVAL
+        elif auto_reload is False:
+            interval = None
+        else:
+            raise TypeError(
+                "auto_reload must be a bool or datetime.timedelta, "
+                f"got {type(auto_reload).__name__}"
+            )
+        if interval is not None:
+            if source is None or not watch_paths(source):
+                raise TypeError(
+                    "auto_reload requires a filesystem-path certificate source "
+                    "to watch; this client was built from in-memory bytes or "
+                    "the Windows store"
+                )
+        elif source is not None and source.password is not None:
+            # Only an unattended auto-reload justifies retaining the password;
+            # a manual reload() can be handed one explicitly.
+            source = SourceRef(kind=source.kind, args=source.args, password=None)
+
         self._material = material
         self._verify_policy = verify
         self._httpx_kwargs = kwargs
         self._certinfo = cert_info(material.cert_pem)
+        self._source = source
+        self._auto_reload = interval
+        self._strict_validity = strict_validity
+        self._reload_lock = threading.Lock()
+        self._watch_paths = watch_paths(source) if source is not None else []
+        self._watch_sig = stat_signature(self._watch_paths)
+        self._next_check = (
+            time.monotonic() + interval.total_seconds()
+            if interval is not None
+            else 0.0
+        )
         self._warn_on_ignored_tls(kwargs)
         self._warn_on_validity(warn_if_expires_within)
         self._ssl_context = _context_from_material(material, verify)
         self._httpx_init(verify=self._ssl_context, **kwargs)
 
     @classmethod
-    def _from_material(
+    def _from_material(  # pylint: disable=too-many-arguments
         cls: type[_S],
         material: Material,
         *,
         verify: VerifyTypes = True,
         warn_if_expires_within: datetime.timedelta | None = None,
+        source: SourceRef | None = None,
+        auto_reload: bool | datetime.timedelta = False,
+        strict_validity: bool = False,
         **kwargs: Any,
     ) -> _S:
         """Build an instance from ready material, bypassing ``__init__``.
@@ -97,6 +175,9 @@ class _PKIMixin:
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
+            source=source,
+            auto_reload=auto_reload,
+            strict_validity=strict_validity,
             **kwargs,
         )
         return self
@@ -155,6 +236,59 @@ class _PKIMixin:
             raise CertificateExpiredError(
                 f"client certificate expires on {not_after}, within {within}"
             )
+
+    # -- rotation -------------------------------------------------------------
+
+    def reload(self, *, password: Password = None) -> None:
+        """Re-read the certificate source and present the current certificate.
+
+        Re-runs the loading path the constructor used (re-reading files,
+        re-resolving ``from_env`` variables, or re-exporting from the Windows
+        store) and loads the fresh certificate into the mounted SSL context
+        **in place** -- new handshakes present it immediately, on every
+        transport sharing the context. Connections already established keep
+        their old certificate until they close.
+
+        The swap is atomic: if the new material cannot be loaded
+        (:class:`~httpx_pki.CertificateLoadError`), the client keeps serving
+        the previous certificate. Pass *password* if the source is encrypted
+        and the client was not built with ``auto_reload`` (which is the only
+        mode that retains the password). Raises :class:`TypeError` for a
+        client built from in-memory bytes -- there is no source to re-read.
+        """
+        if self._source is None or not is_reloadable(self._source):
+            raise TypeError(
+                "this client was built from in-memory bytes; there is no "
+                "certificate source to reload from"
+            )
+        with self._reload_lock:
+            material = resolve_source(self._source, encode_password(password))
+            _load_client_cert(self._ssl_context, material)
+            self._material = material
+            self._certinfo = cert_info(material.cert_pem)
+            self._watch_sig = stat_signature(self._watch_paths)
+            self._warn_on_validity(None)
+
+    def _preflight(self) -> None:
+        """Per-request hook run by ``send()``: auto-reload, then validity.
+
+        The auto-reload check is throttled (at most one ``stat()`` sweep per
+        interval) and only triggers a reload when the watched files' stat
+        fingerprint changed. Concurrent senders that both observe a change
+        serialize on the reload lock; the loser re-reads the same fresh file,
+        which is wasteful but harmless. A reload failure raises on the
+        triggering request and leaves the old fingerprint in place, so the
+        next request retries.
+        """
+        interval = self._auto_reload
+        if interval is not None:
+            now = time.monotonic()
+            if now >= self._next_check:
+                self._next_check = now + interval.total_seconds()
+                if stat_signature(self._watch_paths) != self._watch_sig:
+                    self.reload()
+        if self._strict_validity:
+            self.check_validity()
 
     def _warn_on_ignored_tls(self, kwargs: dict[str, Any]) -> None:
         """Warn that a custom transport makes httpx ignore the client cert.
@@ -270,16 +404,41 @@ class _PKIMixin:
                 stacklevel=2,
             )
             verify = True
+        source = self._source
+        auto_reload: bool | datetime.timedelta = (
+            self._auto_reload if self._auto_reload is not None else False
+        )
+        if source is not None:
+            try:
+                pickle.dumps(source)
+            except (pickle.PicklingError, TypeError, AttributeError):
+                # e.g. a Windows-store lambda predicate. Drop the source (and
+                # the auto-reload that depends on it) rather than failing the
+                # whole pickle; mirrors the SSLContext-verify fallback above.
+                warnings.warn(
+                    "the certificate source cannot be pickled; the unpickled "
+                    "client will not be reloadable.",
+                    stacklevel=2,
+                )
+                source = None
+                auto_reload = False
         return {
             "material": self._material,
             "verify": verify,
             "httpx_kwargs": self._httpx_kwargs,
+            "source": source,
+            "auto_reload": auto_reload,
+            "strict_validity": self._strict_validity,
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
+        # .get() defaults keep pickles from before the rotation feature loading.
         self._apply_material(
             state["material"],
             verify=state["verify"],
+            source=state.get("source"),
+            auto_reload=state.get("auto_reload", False),
+            strict_validity=state.get("strict_validity", False),
             **state["httpx_kwargs"],
         )
 

@@ -249,6 +249,60 @@ client.check_validity(within=timedelta(days=7))  # also raises if it expires soo
 
 (`check_validity` raises `CertificateExpiredError` or `CertificateNotYetValidError`.)
 
+### Certificate rotation (hot reload)
+
+Client certificates keep getting shorter-lived — cert-manager renews a mounted
+Secret at two-thirds of its lifetime, Vault PKI issues certs measured in hours —
+but a session snapshots its certificate at construction. Without rotation
+support, a long-running process presents the stale cert until handshakes start
+failing, and the only fix is a restart.
+
+`reload()` re-reads the certificate source (file, `from_env` variables, or the
+Windows store) and swaps the fresh certificate into the mounted SSL context
+**in place**, so new handshakes — on every transport sharing the context —
+present it immediately:
+
+```python
+client = PKIClient("/etc/certs/client.pem")
+# ... /etc/certs/client.pem is rotated by cert-manager ...
+client.reload()
+```
+
+Or let the session watch for you — `auto_reload` stats the source files before
+a request (throttled, default at most once per second) and reloads when they
+change:
+
+```python
+from datetime import timedelta
+
+client = PKIClient("/etc/certs/client.pem", auto_reload=True)
+client = PKIClient("/etc/certs/client.pem", auto_reload=timedelta(seconds=30))
+```
+
+`strict_validity=True` completes the picture: every request is preceded by
+`check_validity()`, so a certificate that expired anyway fails with a clear
+`CertificateExpiredError` *before* the connection is attempted, instead of an
+opaque OpenSSL handshake error.
+
+Semantics worth knowing:
+
+- The swap is atomic: if the rotated file is unreadable or garbage, `reload()`
+  raises `CertificateLoadError` and the previous certificate keeps serving.
+  With `auto_reload` the error surfaces on the triggering request and is
+  retried on the next one.
+- Connections already established keep the certificate they handshook with
+  until they close (TLS has no mid-connection re-authentication); only new
+  connections present the rotated cert.
+- Rotation tooling should replace files atomically (write-then-rename), which
+  kubelet and cert-manager already do.
+- `auto_reload` requires a filesystem source to watch — construction from
+  in-memory bytes or the Windows store raises `TypeError` (the store can still
+  be re-exported with a manual `reload()`).
+- If the source is password-protected, enabling `auto_reload` retains the
+  password on the session so unattended reloads can decrypt it (see the
+  security note below). Without `auto_reload` no password is retained; pass
+  one explicitly to a manual reload: `client.reload(password="secret")`.
+
 ### Just the SSL context
 
 Don't want the session wrapper? `build_ssl_context` gives you the hard part — a
@@ -360,11 +414,18 @@ so servers that enforce EKU accept them.
 To support pickling, the session stores its certificate material and
 reconstructs the live SSL context on unpickle. **The pickle therefore contains
 the decrypted private key in cleartext.** Treat a pickled session as a secret:
-do not write it to untrusted storage or transmit it over untrusted channels. The
-password itself is never retained, and `repr()` never reveals key material.
+do not write it to untrusted storage or transmit it over untrusted channels.
+`repr()` never reveals key material.
+
+The source password is never retained — with one exception: enabling
+`auto_reload` keeps it on the session (and in its pickles, which already carry
+the decrypted key) so unattended reloads can decrypt the rotated source.
 
 A custom `ssl.SSLContext` passed as `verify=` cannot be pickled; an unpickled
-session falls back to default server verification (with a warning).
+session falls back to default server verification (with a warning). A
+certificate source that cannot be pickled (e.g. a Windows-store `predicate`
+lambda) is dropped with a warning — the unpickled session works but cannot
+`reload()`.
 
 ## How it works
 
