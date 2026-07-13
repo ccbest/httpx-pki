@@ -17,7 +17,6 @@ from pathlib import Path
 import certifi
 
 from ._exceptions import CertificateLoadError
-from ._winstore import Predicate
 from ._material import (
     CertSource,
     Material,
@@ -27,6 +26,7 @@ from ._material import (
     parse_pkcs12,
     read_source,
 )
+from ._winstore import Predicate
 
 # Accepted values for ``verify``: ``True`` (default CA bundle), ``False``
 # (no server verification), a path to a CA bundle, or a ready-made SSLContext.
@@ -78,7 +78,9 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     ``ssl_context``. Windows only; see
     :meth:`~httpx_pki.PKIClient.from_windows_cert_store` for the errors raised.
 
-        ctx = build_windows_ssl_context(predicate=lambda c: "Internal" in (c.friendly_name or ""))
+        ctx = build_windows_ssl_context(
+            predicate=lambda c: "Internal" in (c.friendly_name or "")
+        )
         transport = httpx.HTTPTransport(verify=ctx)
     """
     from ._winstore import load_windows_pkcs12

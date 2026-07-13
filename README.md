@@ -20,9 +20,6 @@ with PKIClient("client.p12", password="secret") as client:
     print(resp.status_code)
 ```
 
-Unlike helper-function approaches, the session is a real, **subclassable** class that works
-
-
 #### Purpose
 
 httpx deprecated its `cert=` argument in 0.28 in favor of building an

@@ -18,13 +18,11 @@ from httpx_pki import (
     PKIClient,
     UnsupportedPlatformError,
     WinCert,
+    build_windows_ssl_context,
+    list_windows_certificates,
 )
 from httpx_pki._winstore import (
     WinCert as WinCertModule,
-)
-from httpx_pki import (
-    build_windows_ssl_context,
-    list_windows_certificates,
 )
 from httpx_pki._winstore import (
     load_windows_pkcs12,
@@ -59,7 +57,8 @@ def test_select_by_substring_friendly_name() -> None:
 
 
 def test_select_is_case_insensitive() -> None:
-    assert select_windows_certificate(CANDIDATES, name="UNRELATED").thumbprint == "EE33FF"
+    tp = select_windows_certificate(CANDIDATES, name="UNRELATED").thumbprint
+    assert tp == "EE33FF"
 
 
 def test_select_by_thumbprint_with_separators() -> None:
