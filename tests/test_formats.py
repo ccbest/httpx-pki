@@ -59,6 +59,14 @@ def test_pem_without_key_raises(client: Signed) -> None:
         PKIClient(client.cert_pem)
 
 
+def test_pem_with_multiple_keys_raises(client: Signed, ca: Signed) -> None:
+    # Two keys in one bundle means it was assembled from the wrong pieces;
+    # refuse it rather than silently picking one.
+    blob = client.key_pem + ca.key_pem + client.cert_pem
+    with pytest.raises(CertificateLoadError, match="multiple private keys"):
+        PKIClient.from_pem(blob)
+
+
 def test_pem_without_cert_raises(client: Signed) -> None:
     with pytest.raises(CertificateLoadError, match="no certificate"):
         PKIClient(client.key_pem)

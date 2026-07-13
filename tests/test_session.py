@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import pickle
 import ssl
+import sys
 from pathlib import Path
 
 import httpx
 import pytest
 
-from httpx_pki import AsyncPKIClient, CertificateLoadError, PKIClient
+from httpx_pki import (
+    AsyncPKIClient,
+    CertificateLoadError,
+    PKIClient,
+    UnsupportedPlatformError,
+)
 from tests.conftest import CLIENT_CN, P12_PASSWORD, Signed
 
 
@@ -212,6 +218,18 @@ def test_subclassing(client_p12: bytes) -> None:
         assert session.cert_info().common_name == CLIENT_CN
 
 
+def test_subclass_alternate_constructor(client_p12: bytes) -> None:
+    class MySession(PKIClient):
+        def greet(self) -> str:
+            return "hi"
+
+    # The inherited classmethod builds (and types, via its bound TypeVar) the
+    # subclass -- mypy sees MySession here, not PKIClient.
+    with MySession.from_pkcs12(client_p12, password=P12_PASSWORD) as session:
+        assert type(session) is MySession
+        assert session.greet() == "hi"
+
+
 def test_cert_kwarg_rejected(client: Signed) -> None:
     # httpx's deprecated cert= must not slip through **kwargs and collide with
     # the SSL context we mount on verify=.
@@ -297,3 +315,37 @@ async def test_async_pickle_round_trip(client_p12: bytes) -> None:
     finally:
         await session.aclose()
         await restored.aclose()
+
+
+# -- async alternate constructors (near-copies of the sync ones; exercised
+# -- explicitly so an edit landing on only one side is caught) ---------------
+
+
+async def test_async_from_pkcs12_classmethod(client_p12: bytes) -> None:
+    async with AsyncPKIClient.from_pkcs12(
+        client_p12, password=P12_PASSWORD
+    ) as session:
+        assert session.cn == CLIENT_CN
+
+
+async def test_async_from_pem(client: Signed, ca: Signed) -> None:
+    blob = client.key_pem + client.cert_pem + ca.cert_pem
+    async with AsyncPKIClient.from_pem(blob) as session:
+        assert session.cn == CLIENT_CN
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+async def test_async_from_key_pair(client: Signed, ca: Signed) -> None:
+    async with AsyncPKIClient.from_key_pair(
+        certificate=client.cert_pem,
+        private_key=client.key_pem,
+        chain=ca.cert_pem,
+    ) as session:
+        assert session.cn == CLIENT_CN
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="tests the non-Windows guard")
+async def test_async_from_windows_cert_store_raises_off_windows() -> None:
+    with pytest.raises(UnsupportedPlatformError):
+        AsyncPKIClient.from_windows_cert_store(name="anything")

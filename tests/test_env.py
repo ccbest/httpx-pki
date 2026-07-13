@@ -34,6 +34,58 @@ def test_from_env_separate_key(
         assert session.cn == "kp"
 
 
+def test_from_env_separate_key_with_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ca = make_ca()
+    bundle = make_client_cert("kp-chain", ca=ca)
+    cert = tmp_path / "client.crt"
+    key = tmp_path / "client.key"
+    chain = tmp_path / "chain.pem"
+    cert.write_bytes(bundle.cert_pem)
+    key.write_bytes(bundle.key_pem)
+    chain.write_bytes(ca.cert_pem)
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(cert))
+    monkeypatch.setenv("HTTPX_PKI_KEY", str(key))
+    monkeypatch.setenv("HTTPX_PKI_CHAIN", str(chain))
+    with PKIClient.from_env() as session:
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_from_env_cert_bundle_keeps_intermediates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # CERT is a leaf-plus-intermediate bundle (intermediate FIRST, so leaf
+    # detection by key match is exercised) with a separate KEY.
+    ca = make_ca()
+    bundle = make_client_cert("kp-bundled", ca=ca)
+    cert = tmp_path / "client-fullchain.crt"
+    key = tmp_path / "client.key"
+    cert.write_bytes(ca.cert_pem + bundle.cert_pem)
+    key.write_bytes(bundle.key_pem)
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(cert))
+    monkeypatch.setenv("HTTPX_PKI_KEY", str(key))
+    with PKIClient.from_env() as session:
+        assert session.cn == "kp-bundled"
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_from_env_chain_appended_to_single_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without KEY, CHAIN certs are appended to whatever the PKCS#12 carries.
+    ca = make_ca()
+    bundle = make_client_cert("p12-chain", ca=ca)
+    p12 = tmp_path / "client.p12"
+    chain = tmp_path / "chain.pem"
+    p12.write_bytes(bundle.pkcs12())
+    chain.write_bytes(ca.cert_pem)
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(p12))
+    monkeypatch.setenv("HTTPX_PKI_CHAIN", str(chain))
+    with PKIClient.from_env() as session:
+        assert ca.cert_pem in session._material.ca_pems
+
+
 def test_from_env_custom_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -27,7 +27,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 __all__ = ["CertBundle", "make_ca", "make_client_cert"]
 
@@ -151,6 +151,10 @@ def make_client_cert(  # pylint: disable=too-many-arguments
     defaults to (yesterday, +365 days); override it with *not_before*/
     *not_after*, or pass ``expired=True`` for a window that has already closed
     (handy for exercising :meth:`PKIClient.check_validity`).
+
+    The certificate carries the extensions a real client certificate would:
+    a KeyUsage of digitalSignature + keyEncipherment and an ExtendedKeyUsage
+    of clientAuth, so servers that enforce EKU accept it.
     """
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = _utcnow()
@@ -178,6 +182,26 @@ def make_client_cert(  # pylint: disable=too-many-arguments
             x509.AuthorityKeyIdentifier.from_issuer_public_key(
                 (ca.key if ca is not None else key).public_key()
             ),
+            critical=False,
+        )
+        # The extensions a CA would put on a real client certificate; strict
+        # servers reject a client cert whose EKU does not include clientAuth.
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]),
             critical=False,
         )
     )

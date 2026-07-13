@@ -91,6 +91,10 @@ client = PKIClient.from_key_pair(
 )
 ```
 
+If `certificate` is itself a bundle (leaf plus intermediates in one PEM file),
+the leaf is identified by matching the private key — in any block order — and
+the other certificates are presented as chain automatically.
+
 ### From the Windows certificate store (Windows only)
 
 Pull an **exportable** client certificate (key included) straight out of the
@@ -149,6 +153,7 @@ with PKIClient.from_env() as client:        # reads HTTPX_PKI_* by default
 | `HTTPX_PKI_CERT` | path to a PKCS#12 or PEM source (**required**) |
 | `HTTPX_PKI_PASSWORD` | password for the cert / key (optional) |
 | `HTTPX_PKI_KEY` | path to a separate private key; switches to cert+key mode |
+| `HTTPX_PKI_CHAIN` | intermediates to present, in addition to any carried by `CERT` |
 | `HTTPX_PKI_CA` | CA bundle for **server** trust (`verify=`) |
 
 Pass a different `prefix=` to namespace per service (`PKIClient.from_env("MYAPP_")`).
@@ -187,6 +192,11 @@ PKIClient("client.p12", verify="/etc/ssl/custom-ca.pem")
 > across clients — each load would overwrite the previous cert. You'll get a
 > warning. Pass `verify=True` or a CA-bundle path to let `httpx-pki` build a
 > dedicated context instead.
+
+Like httpx, contexts built by `httpx-pki` honor the `SSLKEYLOGFILE` environment
+variable, logging TLS session keys to that file so a capture tool (e.g.
+Wireshark) can decrypt the handshake — invaluable when debugging mTLS failures.
+A context you pass in yourself is left untouched.
 
 ### Subclassing
 
@@ -340,6 +350,10 @@ with PKIClient(bundle.pkcs12(), password=b"") as client:
 
 expired = make_client_cert("old", ca=ca, expired=True)  # for expiry tests
 ```
+
+Minted certificates carry the extensions a real CA would issue — a
+`digitalSignature`/`keyEncipherment` KeyUsage and a `clientAuth` ExtendedKeyUsage —
+so servers that enforce EKU accept them.
 
 ## ⚠️ Security note on pickling
 

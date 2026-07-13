@@ -116,17 +116,24 @@ _PEM_BLOCK = re.compile(
 def parse_pem_bundle(data: bytes, password: bytes | None) -> Material:
     """Extract material from a PEM blob holding a key and one or more certs.
 
-    The blocks may appear in any order; the first ``CERTIFICATE`` is treated as
-    the client (leaf) certificate and the rest as the CA chain. The private key
-    may be PKCS#1, PKCS#8, EC, or encrypted (decrypted with *password*).
+    The blocks may appear in any order; the certificate matching the private
+    key is treated as the client (leaf) certificate and the rest as the CA
+    chain. The private key may be PKCS#1, PKCS#8, EC, or encrypted (decrypted
+    with *password*). Exactly one key is allowed: a bundle holding several --
+    almost certainly assembled from the wrong pieces -- is rejected rather
+    than silently using one of them.
     """
     key_block: bytes | None = None
     cert_blocks: list[bytes] = []
     for match in _PEM_BLOCK.finditer(data):
         label = match.group(1)
         if b"PRIVATE KEY" in label:
-            if key_block is None:
-                key_block = match.group(0)
+            if key_block is not None:
+                raise CertificateLoadError(
+                    "PEM data contains multiple private keys; a client bundle "
+                    "must hold exactly one"
+                )
+            key_block = match.group(0)
         elif label == b"CERTIFICATE":
             cert_blocks.append(match.group(0))
 
@@ -245,6 +252,14 @@ def _load_private_key(
             ) from exc
 
 
+def load_chain_pems(source: CertSource) -> list[bytes]:
+    """PEM-encode every certificate in *source* (PEM, possibly several, or DER)."""
+    return [
+        c.public_bytes(serialization.Encoding.PEM)
+        for c in _load_certificates(read_source(source))
+    ]
+
+
 def normalize_pem(
     certificate: CertSource,
     private_key: CertSource,
@@ -253,13 +268,21 @@ def normalize_pem(
 ) -> Material:
     """Build canonical material from a separate certificate and private key.
 
-    *certificate* is the client (leaf) certificate. *chain* carries any
-    intermediate certificates to present to the server: a single source (which
-    may itself concatenate several PEM certs) or a list of sources.
+    *certificate* holds the client (leaf) certificate; if it concatenates
+    several PEM certs (a leaf-plus-intermediates bundle), the leaf is
+    identified by matching the private key and the others are kept as chain.
+    *chain* carries any further intermediate certificates to present to the
+    server: a single source (which may itself concatenate several PEM certs)
+    or a list of sources.
     """
-    leaf = _load_certificate(read_source(certificate))
+    certs = _load_certificates(read_source(certificate))
     key = _load_private_key(read_source(private_key), encode_password(key_password))
-    _verify_key_matches_cert(key, leaf)
+    if len(certs) == 1:
+        leaf = certs[0]
+        _verify_key_matches_cert(key, leaf)
+        intermediates: list[x509.Certificate] = []
+    else:
+        leaf, intermediates = _split_leaf_and_chain(key, certs)
 
     if chain is None:
         chain_sources: list[CertSource] = []
@@ -267,7 +290,6 @@ def normalize_pem(
         chain_sources = chain
     else:
         chain_sources = [chain]
-    intermediates: list[x509.Certificate] = []
     for source in chain_sources:
         intermediates.extend(_load_certificates(read_source(source)))
 

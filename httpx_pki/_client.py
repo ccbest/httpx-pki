@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 import ssl
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 
@@ -22,6 +22,12 @@ from ._material import (
 from ._mixin import _PKIMixin
 from ._ssl import VerifyTypes
 from ._winstore import Predicate
+
+# Bound TypeVars keep the alternate constructors subclass-aware: calling
+# MySession.from_pkcs12(...) types as MySession, not the base class. (These
+# become typing.Self once 3.10 support is dropped.)
+_C = TypeVar("_C", bound="PKIClient")
+_A = TypeVar("_A", bound="AsyncPKIClient")
 
 
 class PKIClient(_PKIMixin, httpx.Client):
@@ -63,17 +69,18 @@ class PKIClient(_PKIMixin, httpx.Client):
 
     @classmethod
     def from_env(
-        cls,
+        cls: type[_C],
         prefix: str = "HTTPX_PKI_",
         *,
         verify: VerifyTypes | None = None,
         **kwargs: Any,
-    ) -> PKIClient:
+    ) -> _C:
         """Build a session from ``{prefix}*`` environment variables.
 
         Reads ``{prefix}CERT`` (required), ``{prefix}PASSWORD``, ``{prefix}KEY``
-        (switches to a separate cert+key), and ``{prefix}CA`` (server-trust
-        bundle). An explicit *verify* overrides ``{prefix}CA``.
+        (switches to a separate cert+key), ``{prefix}CHAIN`` (extra
+        intermediates to present), and ``{prefix}CA`` (server-trust bundle).
+        An explicit *verify* overrides ``{prefix}CA``.
         """
         material, env_verify = resolve_env_material(prefix)
         return cls._from_material(
@@ -82,33 +89,33 @@ class PKIClient(_PKIMixin, httpx.Client):
 
     @classmethod
     def from_pkcs12(
-        cls,
+        cls: type[_C],
         cert: CertSource,
         password: Password = None,
         *,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> PKIClient:
+    ) -> _C:
         """Build a session from a PKCS#12 bundle (path or bytes)."""
         material = parse_pkcs12(read_source(cert), encode_password(password))
         return cls._from_material(material, verify=verify, **kwargs)
 
     @classmethod
     def from_pem(
-        cls,
+        cls: type[_C],
         source: CertSource,
         password: Password = None,
         *,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> PKIClient:
+    ) -> _C:
         """Build a session from a single PEM blob holding the key and cert(s)."""
         material = parse_pem_bundle(read_source(source), encode_password(password))
         return cls._from_material(material, verify=verify, **kwargs)
 
     @classmethod
     def from_key_pair(
-        cls,
+        cls: type[_C],
         certificate: CertSource,
         private_key: CertSource,
         *,
@@ -116,7 +123,7 @@ class PKIClient(_PKIMixin, httpx.Client):
         chain: CertSource | list[CertSource] | None = None,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> PKIClient:
+    ) -> _C:
         """Build a session from a separate certificate and private key.
 
         *certificate* is the client (leaf) certificate. Pass *chain* to present
@@ -128,7 +135,7 @@ class PKIClient(_PKIMixin, httpx.Client):
 
     @classmethod
     def from_windows_cert_store(  # pylint: disable=too-many-arguments
-        cls,
+        cls: type[_C],
         name: str | None = None,
         *,
         thumbprint: str | None = None,
@@ -137,7 +144,7 @@ class PKIClient(_PKIMixin, httpx.Client):
         location: str = "CurrentUser",
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> PKIClient:
+    ) -> _C:
         """Build a session from an exportable certificate in the Windows store.
 
         Windows only. Selects the certificate by ``name`` (case-insensitive
@@ -194,12 +201,12 @@ class AsyncPKIClient(_PKIMixin, httpx.AsyncClient):
 
     @classmethod
     def from_env(
-        cls,
+        cls: type[_A],
         prefix: str = "HTTPX_PKI_",
         *,
         verify: VerifyTypes | None = None,
         **kwargs: Any,
-    ) -> AsyncPKIClient:
+    ) -> _A:
         """Async counterpart of :meth:`PKIClient.from_env`."""
         material, env_verify = resolve_env_material(prefix)
         return cls._from_material(
@@ -208,33 +215,33 @@ class AsyncPKIClient(_PKIMixin, httpx.AsyncClient):
 
     @classmethod
     def from_pkcs12(
-        cls,
+        cls: type[_A],
         cert: CertSource,
         password: Password = None,
         *,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> AsyncPKIClient:
+    ) -> _A:
         """Build a session from a PKCS#12 bundle (path or bytes)."""
         material = parse_pkcs12(read_source(cert), encode_password(password))
         return cls._from_material(material, verify=verify, **kwargs)
 
     @classmethod
     def from_pem(
-        cls,
+        cls: type[_A],
         source: CertSource,
         password: Password = None,
         *,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> AsyncPKIClient:
+    ) -> _A:
         """Build a session from a single PEM blob holding the key and cert(s)."""
         material = parse_pem_bundle(read_source(source), encode_password(password))
         return cls._from_material(material, verify=verify, **kwargs)
 
     @classmethod
     def from_key_pair(
-        cls,
+        cls: type[_A],
         certificate: CertSource,
         private_key: CertSource,
         *,
@@ -242,7 +249,7 @@ class AsyncPKIClient(_PKIMixin, httpx.AsyncClient):
         chain: CertSource | list[CertSource] | None = None,
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> AsyncPKIClient:
+    ) -> _A:
         """Build a session from a separate certificate and private key.
 
         See :meth:`PKIClient.from_key_pair`; pass *chain* to present
@@ -253,7 +260,7 @@ class AsyncPKIClient(_PKIMixin, httpx.AsyncClient):
 
     @classmethod
     def from_windows_cert_store(  # pylint: disable=too-many-arguments
-        cls,
+        cls: type[_A],
         name: str | None = None,
         *,
         thumbprint: str | None = None,
@@ -262,7 +269,7 @@ class AsyncPKIClient(_PKIMixin, httpx.AsyncClient):
         location: str = "CurrentUser",
         verify: VerifyTypes = True,
         **kwargs: Any,
-    ) -> AsyncPKIClient:
+    ) -> _A:
         """Async counterpart of :meth:`PKIClient.from_windows_cert_store`."""
         from ._winstore import load_windows_pkcs12
 

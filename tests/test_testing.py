@@ -19,6 +19,18 @@ def test_ca_has_certsign_key_usage() -> None:
     assert ku.crl_sign
 
 
+def test_client_cert_has_clientauth_extensions() -> None:
+    # Strict servers reject a client certificate without clientAuth in its
+    # EKU; the minted certs must look like ones a real CA would issue.
+    cert = make_client_cert("realistic", ca=make_ca()).cert
+    ku = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    assert ku.digital_signature
+    assert ku.key_encipherment
+    assert not ku.key_cert_sign
+    eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    assert x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH in eku
+
+
 def test_self_signed_client_cert_loads() -> None:
     bundle = make_client_cert("solo")
     assert isinstance(bundle, CertBundle)

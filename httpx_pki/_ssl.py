@@ -106,6 +106,14 @@ def _context_from_material(
 
 
 def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
+    """Create a context per the *verify* policy.
+
+    Every context built here comes from :func:`ssl.create_default_context`,
+    which honors the ``SSLKEYLOGFILE`` environment variable (TLS session keys
+    are logged to that file, for Wireshark-style handshake debugging). A
+    caller-supplied context is returned as-is -- key logging on it is the
+    caller's decision.
+    """
     if isinstance(verify, ssl.SSLContext):
         warnings.warn(
             "verify= was given a pre-built ssl.SSLContext; httpx-pki loads the "
