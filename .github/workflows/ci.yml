@@ -39,7 +39,7 @@ jobs:
       - name: Pytest (coverage)
         env:
           HTTPX_PKI_KEYCHAIN_TESTS: ${{ runner.os == 'macOS' && '1' || '' }}
-        run: pytest -q --cov=httpx_pki --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        run: pytest -q --cov=httpx_pki --cov-report=term-missing --cov-report=xml --cov-fail-under=85
       # Upload from a single representative job: the platform-specific winstore
       # code is pragma-excluded, so every matrix cell reports the same lines --
       # one upload keeps the Codecov number stable and avoids 8x merges.

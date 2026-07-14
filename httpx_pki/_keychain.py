@@ -334,8 +334,15 @@ def _enumerate_identities() -> list[MacCert]:  # pragma: no cover
                 continue
             # Retain so the identity outlives the released query result.
             handle = cf.CFRetain(identity)
-            label = _cfstr(cf, cf.CFDictionaryGetValue(attrs, kSecAttrLabel))
-            subject_cn, thumbprint = _certificate_details(sec, cf, identity)
+            try:
+                label = _cfstr(cf, cf.CFDictionaryGetValue(attrs, kSecAttrLabel))
+                subject_cn, thumbprint = _certificate_details(sec, cf, identity)
+            except CertificateLoadError:
+                # Real keychains hold identities we cannot read (smartcard or
+                # Secure Enclave entries, malformed legacy certs). One of them
+                # must not hide the readable identities -- or leak its handle.
+                cf.CFRelease(handle)
+                continue
             results.append(
                 MacCert(
                     subject_cn=subject_cn,

@@ -126,7 +126,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
                 raise TypeError(
                     "auto_reload requires a filesystem-path certificate source "
                     "to watch; this client was built from in-memory bytes or "
-                    "the Windows store"
+                    "a platform certificate store (Windows / macOS keychain)"
                 )
         elif source is not None and source.password is not None:
             # Only an unattended auto-reload justifies retaining the password;
@@ -262,11 +262,16 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
                 "certificate source to reload from"
             )
         with self._reload_lock:
+            # Fingerprint the watched files BEFORE reading them: if another
+            # rotation lands between the read and the fingerprint, recording
+            # the pre-read signature makes the next preflight see a mismatch
+            # and reload again, instead of silently absorbing that rotation.
+            sig_before = stat_signature(self._watch_paths)
             material = resolve_source(self._source, encode_password(password))
             _load_client_cert(self._ssl_context, material)
             self._material = material
             self._certinfo = cert_info(material.cert_pem)
-            self._watch_sig = stat_signature(self._watch_paths)
+            self._watch_sig = sig_before
             self._warn_on_validity(None)
 
     def _preflight(self) -> None:

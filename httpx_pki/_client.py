@@ -48,11 +48,14 @@ class PKIClient(_PKIMixin, httpx.Client):
     secret). Any extra keyword arguments are passed straight to
     :class:`httpx.Client` (``base_url``, ``headers``, ``timeout``, ``http2`` ...).
 
-    Every constructor also accepts two rotation options: ``auto_reload``
-    (``True`` or a ``timedelta`` throttle -- watch the source files and pick up
-    a rotated certificate automatically; see :meth:`reload`) and
-    ``strict_validity`` (run :meth:`check_validity` before every request, so an
-    expired certificate fails loudly instead of as an OpenSSL handshake error).
+    Every constructor also accepts ``strict_validity`` (run
+    :meth:`check_validity` before every request, so an expired certificate
+    fails loudly instead of as an OpenSSL handshake error). The file-based
+    constructors additionally accept ``auto_reload`` (``True`` or a
+    ``timedelta`` throttle -- watch the source files and pick up a rotated
+    certificate automatically; see :meth:`reload`); the Windows-store and
+    macOS-keychain constructors have no file to watch, but :meth:`reload`
+    still re-exports from the store on demand.
     """
 
     def __init__(  # pylint: disable=W0231, too-many-arguments

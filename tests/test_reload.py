@@ -122,6 +122,32 @@ def test_auto_reload_picks_up_rotation(
         assert session.cn == "rot-b"
 
 
+def test_rotation_landing_mid_reload_is_not_lost(
+    ca: Signed, cert_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A rotation that lands between reload()'s file read and its fingerprint
+    # bookkeeping must be picked up by the next preflight, not absorbed.
+    import httpx_pki._mixin as mixin
+
+    real_resolve = mixin.resolve_source
+    raced = []
+
+    def racy_resolve(ref: object, password: bytes | None = None) -> object:
+        material = real_resolve(ref, password)  # type: ignore[arg-type]
+        if not raced:  # rotate again, exactly once, mid-reload
+            raced.append(True)
+            _rotate(cert_file, _pem(_sign(ca, "rot-c")))
+        return material
+
+    monkeypatch.setattr(mixin, "resolve_source", racy_resolve)
+    with PKIClient(cert_file, auto_reload=datetime.timedelta(0)) as session:
+        _rotate(cert_file, _pem(_sign(ca, "rot-b")))
+        session._preflight()  # reloads rot-b; rot-c lands during the reload
+        assert session.cn == "rot-b"
+        session._preflight()  # must notice the mid-reload rotation
+        assert session.cn == "rot-c"
+
+
 def test_auto_reload_is_throttled(ca: Signed, cert_file: Path) -> None:
     # With a long interval the construction-time check window is still open,
     # so a rotation is deliberately not noticed yet.
