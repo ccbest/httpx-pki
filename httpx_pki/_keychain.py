@@ -29,10 +29,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from cryptography.hazmat.primitives import hashes
-
 from ._exceptions import CertificateLoadError, UnsupportedPlatformError
-from ._material import _load_certificate, cert_info
+from ._material import cert_info
 from ._select import select_certificate
 
 MacPredicate = Callable[["MacCert"], bool]
@@ -378,8 +376,8 @@ def _certificate_details(
         der = _consume_cfdata(cf, sec.SecCertificateCopyData(cert_ref))
     finally:
         cf.CFRelease(cert_ref)
-    thumbprint = _load_certificate(der).fingerprint(hashes.SHA1()).hex().upper()
-    return cert_info(der).common_name, thumbprint
+    info = cert_info(der)
+    return info.common_name, info.fingerprint_sha1
 
 
 def _export_identity(cert: MacCert) -> tuple[bytes, bytes]:  # pragma: no cover

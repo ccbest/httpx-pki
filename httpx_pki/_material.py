@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.types import (
     PrivateKeyTypes,
     PublicKeyTypes,
@@ -40,20 +40,38 @@ class Material:
 
 
 @dataclass(frozen=True)
-class CertInfo:
+class CertInfo:  # pylint: disable=too-many-instance-attributes
     """Human-readable summary of a client certificate.
 
     ``subject_alt_names`` carries every Subject Alternative Name entry as a
     string (DNS names, IP addresses, email addresses, and URIs); ``dns_names``
     is just the dNSName subset, for the common case of hostname checks.
+
+    The fingerprints are uppercase hex with no separators.
+    ``fingerprint_sha1`` uses the same format as the platform stores'
+    thumbprints (:class:`~httpx_pki.WinCert` / :class:`~httpx_pki.MacCert`),
+    so it can be compared against ``list_windows_certificates()`` /
+    ``list_macos_certificates()`` output or passed to a ``thumbprint=``
+    selector; ``fingerprint_sha256`` is the modern identifier for logs.
     """
 
     common_name: str | None
     distinguished_name: str
+    issuer_common_name: str | None
+    issuer_distinguished_name: str
+    serial_number: int
     not_before: datetime.datetime
     not_after: datetime.datetime
+    fingerprint_sha256: str
+    fingerprint_sha1: str
     subject_alt_names: list[str]
     dns_names: list[str] = field(default_factory=list)
+
+    @property
+    def serial_number_hex(self) -> str:
+        """The serial number as uppercase hex, zero-padded to whole bytes."""
+        text = format(self.serial_number, "X")
+        return text.zfill(len(text) + len(text) % 2)
 
 
 def read_source(src: CertSource) -> bytes:
@@ -303,15 +321,18 @@ def normalize_pem(
     return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
 
 
-def cert_info(cert_pem: bytes) -> CertInfo:
-    """Summarize the subject, validity window, and SANs of a certificate."""
-    cert = _load_certificate(cert_pem)
+def _name_cn(name: x509.Name) -> str | None:
+    """The Common Name attribute of an x509 name (``None`` if absent)."""
+    cn_attrs = name.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
+    if not cn_attrs:
+        return None
+    value = cn_attrs[0].value
+    return value if isinstance(value, str) else value.decode("utf-8")
 
-    common_name: str | None = None
-    cn_attrs = cert.subject.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
-    if cn_attrs:
-        value = cn_attrs[0].value
-        common_name = value if isinstance(value, str) else value.decode("utf-8")
+
+def cert_info(cert_pem: bytes) -> CertInfo:
+    """Summarize subject, issuer, validity, serial, fingerprints, and SANs."""
+    cert = _load_certificate(cert_pem)
 
     dns_names: list[str] = []
     sans: list[str] = []
@@ -330,10 +351,15 @@ def cert_info(cert_pem: bytes) -> CertInfo:
         sans += san.get_values_for_type(x509.UniformResourceIdentifier)
 
     return CertInfo(
-        common_name=common_name,
+        common_name=_name_cn(cert.subject),
         distinguished_name=cert.subject.rfc4514_string(),
+        issuer_common_name=_name_cn(cert.issuer),
+        issuer_distinguished_name=cert.issuer.rfc4514_string(),
+        serial_number=cert.serial_number,
         not_before=cert.not_valid_before_utc,
         not_after=cert.not_valid_after_utc,
+        fingerprint_sha256=cert.fingerprint(hashes.SHA256()).hex().upper(),
+        fingerprint_sha1=cert.fingerprint(hashes.SHA1()).hex().upper(),
         subject_alt_names=sans,
         dns_names=dns_names,
     )

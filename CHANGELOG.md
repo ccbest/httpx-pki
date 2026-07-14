@@ -14,6 +14,11 @@ the git history for the fine print.
   carries. Works with every constructor and `build_ssl_context`;
   `HTTPX_PKI_CA=system` selects it for `from_env`; survives pickling. Never
   chosen implicitly: `verify=True` still means certifi, exactly like httpx.
+- `CertInfo` now carries the audit fields: `serial_number` (plus a
+  `serial_number_hex` convenience property), `issuer_common_name` /
+  `issuer_distinguished_name`, and `fingerprint_sha256` / `fingerprint_sha1`
+  (uppercase hex; the SHA-1 form matches the platform stores' thumbprints, so
+  it can be passed straight to a `thumbprint=` selector).
 - Warnings now carry filterable categories: `PKIWarning` (base, a
   `UserWarning`) with `CertificateValidityWarning`, `TLSConfigWarning`, and
   `PicklingWarning` subclasses — silence one concern (e.g. "expires soon")

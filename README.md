@@ -284,11 +284,19 @@ class MyServiceSession(PKIClient):
 ```python
 info = client.cert_info()
 print(info.common_name, info.not_after, info.subject_alt_names)
-print(info.dns_names)  # just the dNSName SANs, for hostname checks
+print(info.dns_names)             # just the dNSName SANs, for hostname checks
+print(info.issuer_common_name)    # who signed it (issuer_distinguished_name for the full DN)
+print(info.serial_number_hex)     # audit logging (serial_number for the raw int)
+print(info.fingerprint_sha256)    # uppercase hex, no separators
 ```
 
 `subject_alt_names` lists every SAN entry as a string (DNS names, IP addresses,
 email addresses, URIs); `dns_names` is the dNSName subset.
+
+`fingerprint_sha1` is also available, in the same format the platform stores
+use for thumbprints — so it can be compared against
+`list_windows_certificates()` / `list_macos_certificates()` output or passed
+straight to a `thumbprint=` selector.
 
 ### Expiry awareness
 

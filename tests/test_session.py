@@ -123,13 +123,42 @@ def test_httpx_kwargs_passthrough(client_p12: bytes) -> None:
         assert session.headers["User-Agent"] == "httpx-pki-test"
 
 
-def test_cert_info_fields(client_p12: bytes) -> None:
+def test_cert_info_fields(client: Signed, client_p12: bytes) -> None:
+    from cryptography.hazmat.primitives import hashes
+
     with PKIClient(client_p12, password=P12_PASSWORD) as session:
         info = session.cert_info()
         assert info.common_name == CLIENT_CN
         assert info.distinguished_name == f"CN={CLIENT_CN}"
         assert info.not_after > info.not_before
         assert "test-client.example.com" in info.subject_alt_names
+        # Audit fields, against the ground-truth cryptography object.
+        assert info.serial_number == client.cert.serial_number
+        assert info.issuer_common_name == "httpx-pki test CA"
+        assert info.issuer_distinguished_name == client.cert.issuer.rfc4514_string()
+        assert (
+            info.fingerprint_sha256
+            == client.cert.fingerprint(hashes.SHA256()).hex().upper()
+        )
+        assert (
+            info.fingerprint_sha1
+            == client.cert.fingerprint(hashes.SHA1()).hex().upper()
+        )
+
+
+def test_cert_info_serial_number_hex() -> None:
+    from httpx_pki import cert_info
+    from httpx_pki.testing import make_client_cert
+
+    bundle = make_client_cert("self-signed")  # no ca= -> self-signed
+    info = cert_info(bundle.cert_pem)
+    # Uppercase hex, whole bytes, round-trips to the integer serial.
+    assert info.serial_number_hex == info.serial_number_hex.upper()
+    assert len(info.serial_number_hex) % 2 == 0
+    assert int(info.serial_number_hex, 16) == info.serial_number
+    # Self-signed: the issuer is the subject.
+    assert info.issuer_common_name == info.common_name
+    assert info.issuer_distinguished_name == info.distinguished_name
 
 
 def test_cert_info_san_types() -> None:
