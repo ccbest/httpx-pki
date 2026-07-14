@@ -527,9 +527,18 @@ lambda) is dropped with a warning — the unpickled session works but cannot
 Python's stdlib `ssl` cannot load PKCS#12 or in-memory key material — only cert
 chains from file paths. So `httpx-pki` uses
 [`cryptography`](https://cryptography.io/) to extract the key and certificates,
-writes them to a `0600` temporary PEM file just long enough for OpenSSL to read,
-deletes it, and passes the resulting `ssl.SSLContext` to httpx via `verify=` (the
-recommended path since httpx 0.28).
+stages them somewhere OpenSSL can read, and passes the resulting
+`ssl.SSLContext` to httpx via `verify=` (the recommended path since httpx 0.28).
+
+**On Linux, the decrypted key never touches disk**: the material is staged in
+an anonymous in-memory file (`memfd_create`) that OpenSSL reads via
+`/proc/self/fd`, and that ceases to exist the moment it's closed — nothing to
+unlink, nothing for a crash to leave behind, nothing for a temp-directory
+sweeper to catch. This matters most with `auto_reload`, where the key is
+re-staged on every certificate rotation. On other platforms — or in a rare
+Linux sandbox where memfd or procfs is unavailable — the material lands in a
+`0600` temporary PEM file just long enough for OpenSSL to read it, then is
+deleted.
 
 ## License
 

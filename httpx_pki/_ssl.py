@@ -8,10 +8,13 @@ loaded on top.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import ssl
+import sys
 import tempfile
 import warnings
+from collections.abc import Iterator
 from pathlib import Path
 
 import certifi
@@ -206,24 +209,69 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
     )
 
 
-def _load_client_cert(ctx: ssl.SSLContext, material: Material) -> None:
-    # stdlib ssl can only load a cert chain from a file path, so the decrypted
-    # key briefly lands in a 0600 temp file (mkstemp default) that we delete as
-    # soon as OpenSSL has read it.
+@contextlib.contextmanager
+def _pem_chain_path(material: Material) -> Iterator[str]:
+    """Yield a path OpenSSL can read the key + cert chain PEM from.
+
+    On Linux the bytes are staged in an anonymous in-memory file (memfd),
+    exposed as ``/proc/self/fd/N`` -- the decrypted key never touches disk,
+    and closing the fd is the whole cleanup. Elsewhere (or in a Linux sandbox
+    where memfd or procfs is unavailable) they land in a 0600 temp file
+    (mkstemp default) that is deleted as soon as OpenSSL has read it.
+    """
+    pem = material.key_pem + material.cert_pem + b"".join(material.ca_pems)
+    # os.memfd_create exists only if the interpreter was BUILT against a glibc
+    # that has it -- some redistributed Linux builds (e.g. older
+    # python-build-standalone) omit it entirely, so probe the attribute rather
+    # than trusting sys.platform.
+    memfd_create = getattr(os, "memfd_create", None)
+    if sys.platform == "linux" and memfd_create is not None:
+        try:
+            # MFD_CLOEXEC keeps the fd from leaking into subprocesses; the
+            # name is what shows up in /proc for debugging. The constant is
+            # looked up defensively for the same build-variance reason (its
+            # kernel ABI value is 1).
+            # The `is not None` guard makes this callable; pylint cannot see
+            # that when analyzed on an interpreter build lacking the symbol.
+            # pylint: disable-next=not-callable
+            memfd = memfd_create(
+                "httpx-pki-client-cert", getattr(os, "MFD_CLOEXEC", 1)
+            )
+        except OSError:
+            # e.g. blocked by a seccomp profile -- use the temp file below.
+            memfd = -1
+        if memfd != -1:
+            try:
+                proc_path = f"/proc/self/fd/{memfd}"
+                # os.write may be partial; the buffered wrapper writes fully.
+                # closefd=False: the fd must outlive this block -- OpenSSL
+                # reopens proc_path (at offset 0) while load_cert_chain runs.
+                with os.fdopen(memfd, "wb", closefd=False) as handle:
+                    handle.write(pem)
+                if os.path.exists(proc_path):  # no procfs -> temp file
+                    yield proc_path
+                    return
+            finally:
+                os.close(memfd)
     fd, path = tempfile.mkstemp(suffix=".pem")
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(material.key_pem)
-            handle.write(material.cert_pem)
-            for ca_pem in material.ca_pems:
-                handle.write(ca_pem)
-        ctx.load_cert_chain(path)
-    except ssl.SSLError as exc:
-        raise CertificateLoadError(
-            f"could not load client certificate chain: {exc}"
-        ) from exc
+            handle.write(pem)
+        yield path
     finally:
         try:
             os.unlink(path)
         except OSError:
             pass
+
+
+def _load_client_cert(ctx: ssl.SSLContext, material: Material) -> None:
+    # stdlib ssl can only load a cert chain from a file path; _pem_chain_path
+    # provides one while keeping the decrypted key off disk where possible.
+    with _pem_chain_path(material) as path:
+        try:
+            ctx.load_cert_chain(path)
+        except ssl.SSLError as exc:
+            raise CertificateLoadError(
+                f"could not load client certificate chain: {exc}"
+            ) from exc

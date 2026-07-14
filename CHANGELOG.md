@@ -6,6 +6,13 @@ the git history for the fine print.
 
 ## Unreleased
 
+- On Linux, the decrypted private key **never touches disk**: certificate
+  material is staged for OpenSSL in an anonymous in-memory file
+  (`memfd_create`, read via `/proc/self/fd`) instead of a temporary PEM file.
+  Matters most with `auto_reload`, which re-stages the key on every rotation.
+  Environments where memfd or procfs is unavailable (e.g. a blocking seccomp
+  profile) fall back to the previous behavior — a `0600` temp file deleted as
+  soon as OpenSSL has read it — which remains the path on Windows and macOS.
 - `verify="system"` verifies servers against the **operating-system trust
   store** (Windows CryptoAPI / macOS Security framework / OpenSSL's system CA
   paths on Linux) via the optional [truststore](https://truststore.readthedocs.io/)

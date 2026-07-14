@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import ssl
 import sys
 from pathlib import Path
@@ -127,6 +128,79 @@ def test_verify_system_honors_sslkeylogfile(
     monkeypatch.setenv("SSLKEYLOGFILE", str(keylog))
     ctx = build_ssl_context(client_p12, password=P12_PASSWORD, verify="system")
     assert ctx.keylog_filename == str(keylog)
+
+
+# -- memfd staging: the decrypted key stays off disk on Linux ----------------
+
+linux_only = pytest.mark.skipif(
+    sys.platform != "linux", reason="memfd staging is Linux-only"
+)
+# os.memfd_create is missing from some redistributed interpreter builds even
+# on Linux (it depends on the glibc the interpreter was built against).
+memfd_required = pytest.mark.skipif(
+    sys.platform != "linux" or not hasattr(os, "memfd_create"),
+    reason="requires a Linux interpreter built with os.memfd_create",
+)
+
+
+@memfd_required
+def test_memfd_is_used_on_linux(
+    mtls_server: object, client_p12: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    real_memfd_create = os.memfd_create
+
+    def spying_memfd_create(name: str, flags: int = 0) -> int:
+        calls.append(name)
+        return real_memfd_create(name, flags)
+
+    monkeypatch.setattr(os, "memfd_create", spying_memfd_create)
+    server = mtls_server
+    ctx = build_ssl_context(
+        client_p12, password=P12_PASSWORD, verify=str(server.ca_file)  # type: ignore[attr-defined]
+    )
+    assert calls == ["httpx-pki-client-cert"]
+    with httpx.Client(verify=ctx) as client:
+        assert client.get(server.url).status_code == 200  # type: ignore[attr-defined]
+
+
+@memfd_required
+def test_key_never_touches_disk_on_linux(
+    mtls_server: object, client_p12: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With mkstemp booby-trapped, a full mTLS round trip still succeeding
+    # proves the decrypted key was staged entirely in memory.
+    def boom(*args: object, **kwargs: object) -> tuple[int, str]:
+        raise AssertionError("client-cert material touched the disk")
+
+    monkeypatch.setattr("tempfile.mkstemp", boom)
+    server = mtls_server
+    with PKIClient(
+        client_p12,
+        password=P12_PASSWORD,
+        verify=str(server.ca_file),  # type: ignore[attr-defined]
+    ) as session:
+        assert session.get(server.url).status_code == 200  # type: ignore[attr-defined]
+
+
+@linux_only
+def test_memfd_failure_falls_back_to_temp_file(
+    mtls_server: object, client_p12: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A seccomp-style denial of memfd_create must degrade to the temp-file
+    # path, not fail -- and the context must still complete a handshake.
+    def denied(name: str, flags: int = 0) -> int:
+        raise OSError("memfd_create blocked")
+
+    # raising=False: also valid on interpreter builds missing memfd_create,
+    # where the patch (rather than the real thing) is what the code probes.
+    monkeypatch.setattr(os, "memfd_create", denied, raising=False)
+    server = mtls_server
+    ctx = build_ssl_context(
+        client_p12, password=P12_PASSWORD, verify=str(server.ca_file)  # type: ignore[attr-defined]
+    )
+    with httpx.Client(verify=ctx) as client:
+        assert client.get(server.url).status_code == 200  # type: ignore[attr-defined]
 
 
 def test_verify_path_named_system_is_a_file(client_p12: bytes) -> None:
