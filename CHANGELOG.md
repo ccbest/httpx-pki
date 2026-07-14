@@ -4,7 +4,7 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
-## Unreleased
+## 0.5.0 — 2026-07-14
 
 - On Linux, the decrypted private key **never touches disk**: certificate
   material is staged for OpenSSL in an anonymous in-memory file
@@ -28,16 +28,11 @@ the git history for the fine print.
   it can be passed straight to a `thumbprint=` selector).
 - Warnings now carry filterable categories: `PKIWarning` (base, a
   `UserWarning`) with `CertificateValidityWarning`, `TLSConfigWarning`, and
-  `PicklingWarning` subclasses — silence one concern (e.g. "expires soon")
-  without regex-matching message text or hiding the others.
+  `PicklingWarning` subclasses.
 - `warn_if_expires_within` is an explicit, documented parameter of every
   constructor (`from_pkcs12`, `from_pem`, `from_key_pair`, `from_env`, and the
   platform-store constructors), not just `PKIClient(...)`. It previously
   worked on the alternates only by accident of `**kwargs` forwarding.
-- Internal: `__init__` and the six `from_*` constructors now live once on the
-  shared mixin instead of being duplicated across `PKIClient` and
-  `AsyncPKIClient` (~200 lines removed; no behavior or typing change —
-  `MySession.from_pkcs12(...)` still types as `MySession`).
 
 ## 0.4.0 — 2026-07-14
 
