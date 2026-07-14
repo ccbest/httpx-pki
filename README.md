@@ -540,6 +540,31 @@ Linux sandbox where memfd or procfs is unavailable — the material lands in a
 `0600` temporary PEM file just long enough for OpenSSL to read it, then is
 deleted.
 
+## Non-goals
+
+`httpx-pki` is scoped to credentials whose private key can be exported into
+memory. Some adjacent things it deliberately does **not** do:
+
+- **PKCS#11, smartcards, HSMs, TPMs, and other non-exportable keys**
+  (YubiKeys, CAC/PIV cards, Windows keys marked non-exportable, Secure
+  Enclave). These are fundamentally incompatible with Python's `ssl` module,
+  which must hold the raw key bytes and offers no way to delegate the
+  handshake signature to external hardware. No library built on stdlib `ssl`
+  can support them; you need an OpenSSL PKCS#11 provider configured outside
+  Python.
+- **Java keystores (JKS/JCEKS).** Java itself moved to PKCS#12 as its default
+  keystore format (Java 9+). Convert once, then use the result directly:
+  `keytool -importkeystore -srckeystore client.jks -destkeystore client.p12
+  -deststoretype PKCS12`
+- **Workload-identity protocol clients (SPIFFE/SPIRE, Vault agent,
+  cert-manager).** All of these can materialize rotating PEM or PKCS#12 files,
+  which [`auto_reload`](#certificate-rotation-hot-reload) already handles — a
+  protocol integration would add heavy dependencies for no new capability.
+- **OCSP / CRL revocation checking.** Stdlib `ssl` provides nothing to build
+  on. `verify="system"` delegates verification to the OS on Windows and macOS,
+  where the platform verifier applies its own revocation policy; beyond that,
+  revocation is out of scope.
+
 ## License
 
 MIT
