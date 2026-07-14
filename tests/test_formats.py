@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs7
 
 from httpx_pki import CertificateLoadError, PKIClient
 from tests.conftest import CLIENT_CN, P12_PASSWORD, Signed
@@ -85,3 +86,69 @@ def test_pem_path_input_nonstandard_extension(
     pem_file.write_bytes(_pem_bundle(client, ca))
     with PKIClient(pem_file) as session:
         assert session.cn == CLIENT_CN
+
+
+# -- PKCS#7 (.p7b) certs-only bundles -----------------------------------------
+
+
+def _p7b(encoding: serialization.Encoding, *signed: Signed) -> bytes:
+    return pkcs7.serialize_certificates([s.cert for s in signed], encoding)
+
+
+@pytest.mark.parametrize(
+    "encoding", [serialization.Encoding.DER, serialization.Encoding.PEM]
+)
+def test_key_pair_chain_accepts_pkcs7(
+    client: Signed, ca: Signed, encoding: serialization.Encoding
+) -> None:
+    with PKIClient.from_key_pair(
+        certificate=client.cert_pem,
+        private_key=client.key_pem,
+        chain=_p7b(encoding, ca),
+    ) as session:
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_key_pair_certificate_accepts_pkcs7(client: Signed, ca: Signed) -> None:
+    # Leaf and CA in one .p7b, CA listed first: the leaf is identified by
+    # matching the private key, not by position.
+    bundle = _p7b(serialization.Encoding.DER, ca, client)
+    with PKIClient.from_key_pair(
+        certificate=bundle, private_key=client.key_pem
+    ) as session:
+        assert session.cn == CLIENT_CN
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_pem_bundle_with_pkcs7_block(client: Signed, ca: Signed) -> None:
+    # A PEM-encoded PKCS7 block riding along in a bundle is expanded in place.
+    blob = client.key_pem + client.cert_pem + _p7b(serialization.Encoding.PEM, ca)
+    with PKIClient.from_pem(blob) as session:
+        assert session.cn == CLIENT_CN
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_single_source_pkcs7_pointed_error(ca: Signed) -> None:
+    # A .p7b holds no private key, so it can never be the single source; the
+    # error must say that instead of blaming the PKCS#12 password.
+    with pytest.raises(CertificateLoadError, match="certificate-only PKCS#7"):
+        PKIClient(_p7b(serialization.Encoding.DER, ca))
+
+
+def test_single_source_der_cert_pointed_error(client: Signed) -> None:
+    der = client.cert.public_bytes(serialization.Encoding.DER)
+    with pytest.raises(
+        CertificateLoadError, match="DER certificate with no private key"
+    ):
+        PKIClient(der)
+
+
+def test_single_source_garbage_still_generic() -> None:
+    # The diagnostics must not misfire on data that is simply broken.
+    with pytest.raises(CertificateLoadError, match="invalid PKCS#12"):
+        PKIClient(b"\x30\x03not a certificate at all")
+
+
+def test_pkcs12_wrong_password_still_generic(client_p12: bytes) -> None:
+    with pytest.raises(CertificateLoadError, match="invalid PKCS#12"):
+        PKIClient(client_p12, password="wrong")

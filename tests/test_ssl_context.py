@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.serialization import Encoding, pkcs7
 
 from httpx_pki import (
     CertificateLoadError,
@@ -16,7 +17,7 @@ from httpx_pki import (
     TLSConfigWarning,
     build_ssl_context,
 )
-from tests.conftest import P12_PASSWORD
+from tests.conftest import P12_PASSWORD, Signed
 
 
 def test_build_ssl_context_returns_context(client_p12: bytes) -> None:
@@ -201,6 +202,36 @@ def test_memfd_failure_falls_back_to_temp_file(
     )
     with httpx.Client(verify=ctx) as client:
         assert client.get(server.url).status_code == 200  # type: ignore[attr-defined]
+
+
+# -- verify= with a PKCS#7 (.p7b) CA bundle ----------------------------------
+
+
+@pytest.mark.parametrize("encoding", [Encoding.DER, Encoding.PEM])
+def test_verify_pkcs7_ca_bundle_round_trip(
+    mtls_server: object,
+    ca: Signed,
+    client_p12: bytes,
+    tmp_path: Path,
+    encoding: Encoding,
+) -> None:
+    # OpenSSL's cafile cannot read PKCS#7, so a successful handshake proves
+    # the fallback converted the bundle and trusted exactly its contents.
+    server = mtls_server
+    p7b = tmp_path / "ca.p7b"
+    p7b.write_bytes(pkcs7.serialize_certificates([ca.cert], encoding))
+    ctx = build_ssl_context(client_p12, password=P12_PASSWORD, verify=str(p7b))
+    with httpx.Client(verify=ctx) as client:
+        assert client.get(server.url).status_code == 200  # type: ignore[attr-defined]
+
+
+def test_verify_garbage_ca_bundle_raises(client_p12: bytes, tmp_path: Path) -> None:
+    # Unparseable CA-bundle content must not be mistaken for PKCS#7 -- the
+    # original "could not load CA bundle" error is re-raised.
+    bad = tmp_path / "ca.pem"
+    bad.write_bytes(b"not a certificate at all")
+    with pytest.raises(CertificateLoadError, match="could not load CA bundle"):
+        build_ssl_context(client_p12, password=P12_PASSWORD, verify=str(bad))
 
 
 def test_verify_path_named_system_is_a_file(client_p12: bytes) -> None:

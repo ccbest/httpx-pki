@@ -48,6 +48,7 @@ extension never matters:
 | **PKCS#12** (`.p12`, `.pfx`, binary) | `PKIClient(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob |
 | **PEM bundle** (key + cert(s) in one file) | `PKIClient(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys |
 | **Separate cert + key** (PEM *or* DER) | `from_key_pair(...)` | optional `chain=` intermediates |
+| **PKCS#7 / `.p7b`** (certs only, DER or PEM) | `certificate=`/`chain=` in `from_key_pair`, or a `verify=` CA bundle | holds no private key — pairs with a separate key |
 | **Windows cert store** | `from_windows_cert_store(...)` | Windows only; see below |
 | **macOS keychain** | `from_macos_keychain(...)` | macOS only; see below |
 
@@ -96,7 +97,9 @@ client = PKIClient.from_key_pair(
 
 If `certificate` is itself a bundle (leaf plus intermediates in one PEM file),
 the leaf is identified by matching the private key — in any block order — and
-the other certificates are presented as chain automatically.
+the other certificates are presented as chain automatically. Both `certificate`
+and `chain` also accept certs-only **PKCS#7** bundles (`.p7b`/`.p7c`, DER or
+PEM) — the format Windows CAs commonly export chains in.
 
 ### From the Windows certificate store (Windows only)
 
@@ -231,6 +234,10 @@ operating-system trust store:
 ```python
 PKIClient("client.p12", verify="/etc/ssl/custom-ca.pem")
 ```
+
+The CA-bundle path may be PEM or a certs-only **PKCS#7** bundle (`.p7b`, DER or
+PEM) — handy when the private CA was exported from a Windows CA, which OpenSSL
+itself can't read as a `cafile`.
 
 #### Corporate / private CAs: `verify="system"`
 

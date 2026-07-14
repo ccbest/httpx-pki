@@ -25,6 +25,7 @@ from ._material import (
     CertSource,
     Material,
     Password,
+    _pkcs7_cadata,
     encode_password,
     load_material,
     parse_pkcs12,
@@ -34,8 +35,8 @@ from ._winstore import Predicate
 
 # Accepted values for ``verify``: ``True`` (default CA bundle), ``False``
 # (no server verification), the literal string ``"system"`` (the OS trust
-# store, via the optional truststore package), a path to a CA bundle, or a
-# ready-made SSLContext.
+# store, via the optional truststore package), a path to a CA bundle (PEM or
+# certs-only PKCS#7), or a ready-made SSLContext.
 VerifyTypes = bool | str | Path | ssl.SSLContext
 
 
@@ -199,6 +200,18 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
     if isinstance(verify, (str, Path)):
         try:
             return ssl.create_default_context(cafile=os.fspath(verify))
+        except ssl.SSLError as exc:
+            # OpenSSL's cafile is PEM-only, so a PKCS#7 bundle (.p7b -- the
+            # usual Windows-CA chain export) lands here: convert it and load
+            # via cadata (which also keeps create_default_context from mixing
+            # in the default CAs). Must precede the OSError arm -- SSLError is
+            # an OSError subclass.
+            cadata = _pkcs7_cadata(read_source(verify))
+            if cadata is None:
+                raise CertificateLoadError(
+                    f"could not load CA bundle {verify!r}: {exc}"
+                ) from exc
+            return ssl.create_default_context(cadata=cadata)
         except OSError as exc:
             raise CertificateLoadError(
                 f"could not load CA bundle {verify!r}: {exc}"

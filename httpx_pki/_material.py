@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.types import (
     PrivateKeyTypes,
     PublicKeyTypes,
 )
-from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography.hazmat.primitives.serialization import pkcs7, pkcs12
 
 from ._exceptions import CertificateLoadError
 
@@ -106,9 +106,7 @@ def parse_pkcs12(data: bytes, password: bytes | None) -> Material:
     try:
         key, cert, additional = pkcs12.load_key_and_certificates(data, password)
     except (ValueError, TypeError) as exc:
-        raise CertificateLoadError(
-            "invalid PKCS#12 data or wrong password"
-        ) from exc
+        raise CertificateLoadError(_pkcs12_failure_message(data)) from exc
 
     if key is None:
         raise CertificateLoadError("PKCS#12 data contains no private key")
@@ -125,6 +123,31 @@ def parse_pkcs12(data: bytes, password: bytes | None) -> Material:
     return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
 
 
+def _pkcs12_failure_message(data: bytes) -> str:
+    """Diagnose why *data* failed to parse as PKCS#12.
+
+    A bare DER certificate or a certs-only PKCS#7 bundle (.p7b) is
+    indistinguishable from PKCS#12 by content sniffing (all are DER), so a user
+    who passes one as the single source lands here -- point them at the right
+    entry point instead of blaming the password.
+    """
+    try:
+        x509.load_der_x509_certificate(data)
+    except ValueError:
+        pass
+    else:
+        return (
+            "the data is a DER certificate with no private key; pass it to "
+            "from_key_pair(certificate=..., private_key=...)"
+        )
+    if _maybe_pkcs7_certificates(data) is not None:
+        return (
+            "the data is a certificate-only PKCS#7 bundle with no private "
+            "key; use it as chain= in from_key_pair or as a verify= CA bundle"
+        )
+    return "invalid PKCS#12 data or wrong password"
+
+
 # A single PEM block: -----BEGIN <LABEL>----- ... -----END <LABEL>-----
 _PEM_BLOCK = re.compile(
     rb"-----BEGIN ([A-Z0-9 ]+?)-----.+?-----END \1-----", re.DOTALL
@@ -136,13 +159,15 @@ def parse_pem_bundle(data: bytes, password: bytes | None) -> Material:
 
     The blocks may appear in any order; the certificate matching the private
     key is treated as the client (leaf) certificate and the rest as the CA
-    chain. The private key may be PKCS#1, PKCS#8, EC, or encrypted (decrypted
-    with *password*). Exactly one key is allowed: a bundle holding several --
+    chain. Certificates may also arrive inside a ``PKCS7`` block (a certs-only
+    ``.p7b`` re-encoded as PEM), whose contents are expanded in place. The
+    private key may be PKCS#1, PKCS#8, EC, or encrypted (decrypted with
+    *password*). Exactly one key is allowed: a bundle holding several --
     almost certainly assembled from the wrong pieces -- is rejected rather
     than silently using one of them.
     """
     key_block: bytes | None = None
-    cert_blocks: list[bytes] = []
+    certs: list[x509.Certificate] = []
     for match in _PEM_BLOCK.finditer(data):
         label = match.group(1)
         if b"PRIVATE KEY" in label:
@@ -153,15 +178,21 @@ def parse_pem_bundle(data: bytes, password: bytes | None) -> Material:
                 )
             key_block = match.group(0)
         elif label == b"CERTIFICATE":
-            cert_blocks.append(match.group(0))
+            certs.append(_load_certificate(match.group(0)))
+        elif label == b"PKCS7":
+            try:
+                certs.extend(pkcs7.load_pem_pkcs7_certificates(match.group(0)))
+            except ValueError as exc:
+                raise CertificateLoadError(
+                    "could not parse PKCS#7 block in PEM data"
+                ) from exc
 
     if key_block is None:
         raise CertificateLoadError("no private key found in PEM data")
-    if not cert_blocks:
+    if not certs:
         raise CertificateLoadError("no certificate found in PEM data")
 
     key = _load_private_key(key_block, password)
-    certs = [_load_certificate(block) for block in cert_blocks]
     leaf, chain = _split_leaf_and_chain(key, certs)
     key_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -243,8 +274,43 @@ def _load_certificate(data: bytes) -> x509.Certificate:
             raise CertificateLoadError("could not parse certificate") from exc
 
 
+def _maybe_pkcs7_certificates(data: bytes) -> list[x509.Certificate] | None:
+    """Parse *data* as a certs-only PKCS#7 bundle, or ``None`` if it isn't one.
+
+    PKCS#7 (``.p7b``/``.p7c``) is how Windows CAs commonly export certificate
+    chains -- DER or PEM, never holding a private key.
+    """
+    try:
+        if b"-----BEGIN PKCS7-----" in data:
+            certs = pkcs7.load_pem_pkcs7_certificates(data)
+        elif b"-----BEGIN" not in data:
+            certs = pkcs7.load_der_pkcs7_certificates(data)
+        else:
+            return None
+    except ValueError:
+        return None
+    if not certs:
+        raise CertificateLoadError("PKCS#7 bundle contains no certificates")
+    return certs
+
+
+def _pkcs7_cadata(data: bytes) -> str | None:
+    """PEM text of a certs-only PKCS#7 bundle, for ``SSLContext`` ``cadata``
+    loading; ``None`` if *data* isn't PKCS#7."""
+    certs = _maybe_pkcs7_certificates(data)
+    if certs is None:
+        return None
+    return b"".join(
+        c.public_bytes(serialization.Encoding.PEM) for c in certs
+    ).decode("ascii")
+
+
 def _load_certificates(data: bytes) -> list[x509.Certificate]:
-    """Load every certificate in *data* (PEM may hold several; DER holds one)."""
+    """Load every certificate in *data* (PEM may hold several; DER holds one;
+    a certs-only PKCS#7 bundle may hold several)."""
+    pkcs7_certs = _maybe_pkcs7_certificates(data)
+    if pkcs7_certs is not None:
+        return pkcs7_certs
     if b"-----BEGIN" in data:
         try:
             certs = x509.load_pem_x509_certificates(data)

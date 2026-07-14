@@ -4,6 +4,19 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
+## Unreleased
+
+- **PKCS#7 (`.p7b`/`.p7c`) certificate bundles** are accepted anywhere
+  certificates (not keys) are accepted, in DER or PEM: `certificate=` and
+  `chain=` in `from_key_pair`, the chain variable of `from_env`, a PEM bundle
+  holding a `PKCS7` block, and — new for `verify=` — a `.p7b` path as the CA
+  bundle (converted internally; OpenSSL's `cafile` is PEM-only). This is the
+  format Windows CAs commonly export chains in.
+- Passing a certificate with no private key as the single source now raises a
+  pointed error naming the right entry point, instead of the misleading
+  "invalid PKCS#12 data or wrong password": bare DER certificates are directed
+  to `from_key_pair`, certs-only PKCS#7 bundles to `chain=`/`verify=`.
+
 ## 0.5.0 — 2026-07-14
 
 - On Linux, the decrypted private key **never touches disk**: certificate
