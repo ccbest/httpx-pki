@@ -44,6 +44,7 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/ccbest/httpx-pki"
 Source = "https://github.com/ccbest/httpx-pki"
+Changelog = "https://github.com/ccbest/httpx-pki/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ccbest/httpx-pki/issues"
 
 [tool.hatch.build.targets.wheel]

@@ -1,0 +1,75 @@
+# Changelog
+
+Notable changes to httpx-pki, by release. This project follows
+[semantic versioning](https://semver.org/); entries are feature-level — see
+the git history for the fine print.
+
+## 0.4.0 — 2026-07-14
+
+### Certificate rotation (hot reload)
+
+- `client.reload()` re-reads the certificate source — file, `from_env`
+  variables, or a platform certificate store — and swaps the fresh certificate
+  into the mounted SSL context in place, so new handshakes present it without
+  rebuilding the client. The swap is atomic: an unreadable source leaves the
+  previous certificate serving.
+- `auto_reload=True` (or a `timedelta` throttle) watches the source files and
+  reloads automatically when they change — built for cert-manager/Vault-style
+  environments where certificates rotate under a running process.
+- `strict_validity=True` runs `check_validity()` before every request, so an
+  expired certificate fails with a clear `CertificateExpiredError` instead of
+  an opaque handshake error.
+
+### macOS keychain support
+
+- `PKIClient.from_macos_keychain()` (and the async equivalent) pulls an
+  exportable identity straight from the keychain, selected by name substring,
+  thumbprint, or predicate — the macOS sibling of the Windows cert store
+  integration, with the same selection semantics and error types.
+- `list_macos_certificates()`, `select_macos_certificate()`, `MacCert`, and
+  `build_macos_ssl_context()` round out the surface.
+- CI now runs the full test matrix on macOS (alongside Linux and Windows),
+  including live mTLS round trips against a real temporary keychain.
+
+## 0.3.0 — 2026-07-13
+
+- The Windows cert store helpers went public: `build_windows_ssl_context()`,
+  `list_windows_certificates()`, and `select_windows_certificate()`.
+- Leaf-plus-intermediates bundles are preserved everywhere: `from_key_pair`
+  and `from_env` keep chain certificates found alongside the leaf (identified
+  by private-key match, in any order), and the new `HTTPX_PKI_CHAIN`
+  environment variable supplies extra intermediates.
+- Alternate constructors are subclass-aware in type checkers:
+  `MySession.from_pkcs12(...)` now types as `MySession`, not the base class.
+- A PEM bundle containing multiple private keys is rejected up front rather
+  than silently using one of them.
+- `httpx_pki.testing` mints certificates with realistic extensions
+  (`digitalSignature`/`keyEncipherment` KeyUsage, `clientAuth` EKU), so strict
+  servers accept them.
+- Python 3.14 support.
+
+## 0.2.0 — 2026-07-02
+
+- `client.certificate` exposes the parsed `cryptography` x509 certificate and
+  `client.ssl_context` the exact SSL context mounted on the session, for
+  building custom transports that present the same client certificate.
+
+## 0.1.0 — 2026-06-30
+
+Initial release.
+
+- `PKIClient` / `AsyncPKIClient`: subclassable httpx sessions with a client
+  certificate mounted, built from PKCS#12 or PEM (encoding detected from
+  content, never the file extension), a separate cert + key pair, environment
+  variables (`from_env`), or the Windows certificate store.
+- `build_ssl_context()` for using the certificate-loading machinery without
+  the session wrapper.
+- Expiry awareness: loading an expired or not-yet-valid certificate warns
+  immediately; `check_validity()`, `is_expired`, `expires_in`, and friends
+  make it inspectable.
+- Early validation that the private key matches the certificate, instead of a
+  cryptic OpenSSL handshake failure later.
+- `httpx_pki.testing` helpers (`make_ca`, `make_client_cert`) for minting
+  throwaway certificates in downstream test suites.
+- Pickling support (the pickle contains the decrypted key — treat it as a
+  secret).
