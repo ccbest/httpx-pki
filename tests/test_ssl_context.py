@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from httpx_pki import build_ssl_context
+from httpx_pki import TLSConfigWarning, build_ssl_context
 from tests.conftest import P12_PASSWORD
 
 
@@ -21,7 +21,7 @@ def test_passed_context_is_mutated_in_place_with_warning(client_p12: bytes) -> N
     # A caller-supplied context is reused as-is and gets the client cert loaded
     # into it; we warn so a shared context is not surprising.
     ctx = ssl.create_default_context()
-    with pytest.warns(UserWarning, match="pre-built ssl.SSLContext"):
+    with pytest.warns(TLSConfigWarning, match="pre-built ssl.SSLContext"):
         out = build_ssl_context(client_p12, password=P12_PASSWORD, verify=ctx)
     assert out is ctx
 
@@ -55,7 +55,7 @@ def test_sslkeylogfile_leaves_caller_context_alone(
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    with pytest.warns(UserWarning, match="pre-built ssl.SSLContext"):
+    with pytest.warns(TLSConfigWarning, match="pre-built ssl.SSLContext"):
         out = build_ssl_context(client_p12, password=P12_PASSWORD, verify=ctx)
     assert out.keylog_filename is None
 

@@ -9,7 +9,11 @@ from ._exceptions import (
     CertificateLoadError,
     CertificateNotFoundError,
     CertificateNotYetValidError,
+    CertificateValidityWarning,
+    PicklingWarning,
     PKIError,
+    PKIWarning,
+    TLSConfigWarning,
     UnsupportedPlatformError,
 )
 from ._keychain import (
@@ -42,6 +46,10 @@ __all__ = [
     "CertificateNotFoundError",
     "AmbiguousCertificateError",
     "UnsupportedPlatformError",
+    "PKIWarning",
+    "CertificateValidityWarning",
+    "TLSConfigWarning",
+    "PicklingWarning",
     "CertInfo",
     "Material",
     "cert_info",

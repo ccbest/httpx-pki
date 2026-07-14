@@ -275,8 +275,9 @@ client.expires_in        # timedelta (negative once expired)
 client.not_valid_after   # datetime (UTC)
 ```
 
-Pass `warn_if_expires_within=` to be told about a cert that's about to roll over,
-and call `check_validity()` to turn "not currently usable" into a hard error:
+Pass `warn_if_expires_within=` (accepted by every constructor, `from_*`
+included) to be told about a cert that's about to roll over, and call
+`check_validity()` to turn "not currently usable" into a hard error:
 
 ```python
 from datetime import timedelta
@@ -290,6 +291,22 @@ client.check_validity(within=timedelta(days=7))  # also raises if it expires soo
 ```
 
 (`check_validity` raises `CertificateExpiredError` or `CertificateNotYetValidError`.)
+
+### Filtering warnings
+
+Every warning `httpx-pki` emits carries a filterable category, all subclasses of
+`PKIWarning` (itself a `UserWarning`): `CertificateValidityWarning` (expired /
+not yet valid / expiring soon), `TLSConfigWarning` (a TLS configuration that
+likely doesn't do what was intended, e.g. a custom transport that drops the
+client cert, or `verify=False`), and `PicklingWarning` (configuration dropped
+during pickling). Silence one concern without hiding the others:
+
+```python
+import warnings
+from httpx_pki import CertificateValidityWarning
+
+warnings.filterwarnings("ignore", category=CertificateValidityWarning)
+```
 
 ### Certificate rotation (hot reload)
 

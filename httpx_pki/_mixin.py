@@ -1,10 +1,12 @@
-"""Shared certificate, pickle, and repr behavior for the session classes.
+"""Shared construction, certificate, pickle, and repr behavior for the sessions.
 
-The mixin owns the canonical :class:`~httpx_pki._material.Material` and the
-``verify`` policy. It never calls ``super().__init__`` directly; instead each
-concrete client implements :meth:`_httpx_init` to forward to the right httpx
-base class. This keeps the sync and async clients in lockstep and lets
-:meth:`__setstate__` rebuild a client without re-running ``__init__``.
+The mixin owns the canonical :class:`~httpx_pki._material.Material`, the
+``verify`` policy, and every constructor -- ``__init__`` and the ``from_*``
+alternates, which are identical for the sync and async clients. It never calls
+``super().__init__`` directly; instead each concrete client implements
+:meth:`_httpx_init` to forward to the right httpx base class. This keeps the
+sync and async clients in lockstep and lets :meth:`__setstate__` rebuild a
+client without re-running ``__init__``.
 """
 
 from __future__ import annotations
@@ -20,14 +22,28 @@ from typing import Any, TypeVar
 
 from cryptography import x509
 
-from ._exceptions import CertificateExpiredError, CertificateNotYetValidError
+from ._env import resolve_env_material
+from ._exceptions import (
+    CertificateExpiredError,
+    CertificateNotYetValidError,
+    CertificateValidityWarning,
+    PicklingWarning,
+    TLSConfigWarning,
+)
+from ._keychain import MacPredicate
 from ._material import (
     CertInfo,
+    CertSource,
     Material,
     Password,
     _load_certificate,
     cert_info,
     encode_password,
+    load_material,
+    normalize_pem,
+    parse_pem_bundle,
+    parse_pkcs12,
+    read_source,
 )
 from ._source import (
     SourceRef,
@@ -38,7 +54,11 @@ from ._source import (
     watch_paths,
 )
 from ._ssl import VerifyTypes, _context_from_material, _load_client_cert
+from ._winstore import Predicate
 
+# Bound TypeVar keeps the alternate constructors subclass-aware: calling
+# MySession.from_pkcs12(...) types as MySession, not the base class. (This
+# becomes typing.Self once 3.10 support is dropped.)
 _S = TypeVar("_S", bound="_PKIMixin")
 
 # Throttle for auto_reload=True: how often (at most) the source files are
@@ -89,6 +109,29 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     def _httpx_init(self, *, verify: ssl.SSLContext, **kwargs: Any) -> None:
         """Forward to the concrete httpx base class. Overridden per client."""
         raise NotImplementedError
+
+    def __init__(  # pylint: disable=too-many-arguments
+        self,
+        cert: CertSource,
+        password: Password = None,
+        *,
+        verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
+        auto_reload: bool | datetime.timedelta = False,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        encoded = encode_password(password)
+        material = load_material(read_source(cert), encoded)
+        self._apply_material(
+            material,
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            source=SourceRef("auto", {"cert": cert}, encoded),
+            auto_reload=auto_reload,
+            strict_validity=strict_validity,
+            **kwargs,
+        )
 
     def _apply_material(  # pylint: disable=too-many-arguments
         self,
@@ -181,6 +224,235 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             **kwargs,
         )
         return self
+
+    # -- alternate constructors (shared verbatim by the sync and async
+    # clients; each returns the class it was called on) ----------------------
+
+    @classmethod
+    def from_env(  # pylint: disable=too-many-arguments
+        cls: type[_S],
+        prefix: str = "HTTPX_PKI_",
+        *,
+        verify: VerifyTypes | None = None,
+        warn_if_expires_within: datetime.timedelta | None = None,
+        auto_reload: bool | datetime.timedelta = False,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _S:
+        """Build a session from ``{prefix}*`` environment variables.
+
+        Reads ``{prefix}CERT`` (required), ``{prefix}PASSWORD``, ``{prefix}KEY``
+        (switches to a separate cert+key), ``{prefix}CHAIN`` (extra
+        intermediates to present), and ``{prefix}CA`` (server-trust bundle).
+        An explicit *verify* overrides ``{prefix}CA``. Reloading re-reads the
+        environment; ``auto_reload`` watches the files the variables pointed
+        at when the session was built. *warn_if_expires_within* warns about a
+        certificate that expires inside that window (see :meth:`check_validity`).
+        """
+        material, env_verify = resolve_env_material(prefix)
+        return cls._from_material(
+            material,
+            verify=env_verify if verify is None else verify,
+            warn_if_expires_within=warn_if_expires_within,
+            source=SourceRef("env", {"prefix": prefix}),
+            auto_reload=auto_reload,
+            strict_validity=strict_validity,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_pkcs12(  # pylint: disable=too-many-arguments
+        cls: type[_S],
+        cert: CertSource,
+        password: Password = None,
+        *,
+        verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
+        auto_reload: bool | datetime.timedelta = False,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _S:
+        """Build a session from a PKCS#12 bundle (path or bytes).
+
+        *warn_if_expires_within* warns about a certificate that expires inside
+        that window (see :meth:`check_validity`).
+        """
+        encoded = encode_password(password)
+        material = parse_pkcs12(read_source(cert), encoded)
+        return cls._from_material(
+            material,
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            source=SourceRef("pkcs12", {"cert": cert}, encoded),
+            auto_reload=auto_reload,
+            strict_validity=strict_validity,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_pem(  # pylint: disable=too-many-arguments
+        cls: type[_S],
+        source: CertSource,
+        password: Password = None,
+        *,
+        verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
+        auto_reload: bool | datetime.timedelta = False,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _S:
+        """Build a session from a single PEM blob holding the key and cert(s).
+
+        *warn_if_expires_within* warns about a certificate that expires inside
+        that window (see :meth:`check_validity`).
+        """
+        encoded = encode_password(password)
+        material = parse_pem_bundle(read_source(source), encoded)
+        return cls._from_material(
+            material,
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            source=SourceRef("pem", {"source": source}, encoded),
+            auto_reload=auto_reload,
+            strict_validity=strict_validity,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_key_pair(  # pylint: disable=too-many-arguments
+        cls: type[_S],
+        certificate: CertSource,
+        private_key: CertSource,
+        *,
+        key_password: Password = None,
+        chain: CertSource | list[CertSource] | None = None,
+        verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
+        auto_reload: bool | datetime.timedelta = False,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _S:
+        """Build a session from a separate certificate and private key.
+
+        *certificate* is the client (leaf) certificate. Pass *chain* to present
+        intermediate certificates to the server: a single source (which may
+        concatenate several PEM certs) or a list of sources.
+        *warn_if_expires_within* warns about a certificate that expires inside
+        that window (see :meth:`check_validity`).
+        """
+        encoded = encode_password(key_password)
+        material = normalize_pem(certificate, private_key, key_password, chain)
+        return cls._from_material(
+            material,
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            source=SourceRef(
+                "key_pair",
+                {
+                    "certificate": certificate,
+                    "private_key": private_key,
+                    "chain": chain,
+                },
+                encoded,
+            ),
+            auto_reload=auto_reload,
+            strict_validity=strict_validity,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_macos_keychain(  # pylint: disable=too-many-arguments
+        cls: type[_S],
+        name: str | None = None,
+        *,
+        thumbprint: str | None = None,
+        predicate: MacPredicate | None = None,
+        verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _S:
+        """Build a session from an exportable identity in the macOS keychain.
+
+        macOS only. Selects the identity from the default keychain search list
+        by ``name`` (case-insensitive substring of the subject common name or
+        keychain label), or unambiguously by ``thumbprint`` or a ``predicate``
+        callable. The private key must be exportable, and the keychain must
+        not require an interactive consent prompt (provision with
+        ``security import ... -A`` or "Always Allow" for unattended use).
+        :meth:`reload` re-exports from the keychain with the same selector
+        (there is no file to watch, so ``auto_reload`` is not available).
+        *warn_if_expires_within* warns about a certificate that expires inside
+        that window (see :meth:`check_validity`).
+
+        Raises :class:`~httpx_pki.UnsupportedPlatformError` off macOS,
+        :class:`~httpx_pki.CertificateNotFoundError` if nothing matches, and
+        :class:`~httpx_pki.AmbiguousCertificateError` if several do.
+        """
+        from ._keychain import load_macos_pkcs12
+
+        selector: dict[str, Any] = {
+            "name": name,
+            "thumbprint": thumbprint,
+            "predicate": predicate,
+        }
+        pfx, password = load_macos_pkcs12(**selector)
+        return cls._from_material(
+            parse_pkcs12(pfx, password),
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            source=SourceRef("macos_keychain", selector),
+            strict_validity=strict_validity,
+            **kwargs,
+        )
+
+    @classmethod
+    def from_windows_cert_store(  # pylint: disable=too-many-arguments
+        cls: type[_S],
+        name: str | None = None,
+        *,
+        thumbprint: str | None = None,
+        predicate: Predicate | None = None,
+        store: str = "MY",
+        location: str = "CurrentUser",
+        verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _S:
+        """Build a session from an exportable certificate in the Windows store.
+
+        Windows only. Selects the certificate by ``name`` (case-insensitive
+        substring of the subject common name or friendly name), or unambiguously
+        by ``thumbprint`` or a ``predicate`` callable. The matching certificate's
+        private key must be marked exportable. :meth:`reload` re-exports from
+        the store with the same selector (there is no file to watch, so
+        ``auto_reload`` is not available). *warn_if_expires_within* warns about
+        a certificate that expires inside that window (see
+        :meth:`check_validity`).
+
+        Raises :class:`~httpx_pki.UnsupportedPlatformError` off Windows,
+        :class:`~httpx_pki.CertificateNotFoundError` if nothing matches, and
+        :class:`~httpx_pki.AmbiguousCertificateError` if several do.
+        """
+        from ._winstore import load_windows_pkcs12
+
+        selector: dict[str, Any] = {
+            "name": name,
+            "thumbprint": thumbprint,
+            "predicate": predicate,
+            "store": store,
+            "location": location,
+        }
+        pfx, password = load_windows_pkcs12(**selector)
+        return cls._from_material(
+            parse_pkcs12(pfx, password),
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            source=SourceRef("winstore", selector),
+            strict_validity=strict_validity,
+            **kwargs,
+        )
 
     # -- validity -----------------------------------------------------------
 
@@ -315,6 +587,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
                 "client certificate is NOT mounted on this session. Build the "
                 "context with build_ssl_context() and put it on the inner "
                 "transport instead, e.g. httpx.HTTPTransport(verify=ctx).",
+                TLSConfigWarning,
                 stacklevel=3,
             )
 
@@ -327,12 +600,14 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             warnings.warn(
                 f"client certificate expired on {info.not_after:%Y-%m-%d}; "
                 "mTLS handshakes will fail.",
+                CertificateValidityWarning,
                 stacklevel=3,
             )
         elif now < info.not_before:
             warnings.warn(
                 f"client certificate is not valid until {info.not_before:%Y-%m-%d}; "
                 "mTLS handshakes will fail until then.",
+                CertificateValidityWarning,
                 stacklevel=3,
             )
         elif (
@@ -343,6 +618,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             warnings.warn(
                 f"client certificate expires on {info.not_after:%Y-%m-%d} "
                 f"(in {days} day(s)).",
+                CertificateValidityWarning,
                 stacklevel=3,
             )
 
@@ -406,6 +682,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             warnings.warn(
                 "a custom ssl.SSLContext passed as verify= cannot be pickled; "
                 "the unpickled client falls back to default server verification.",
+                PicklingWarning,
                 stacklevel=2,
             )
             verify = True
@@ -423,6 +700,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
                 warnings.warn(
                     "the certificate source cannot be pickled; the unpickled "
                     "client will not be reloadable.",
+                    PicklingWarning,
                     stacklevel=2,
                 )
                 source = None

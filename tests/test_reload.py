@@ -15,6 +15,8 @@ from httpx_pki import (
     AsyncPKIClient,
     CertificateExpiredError,
     CertificateLoadError,
+    CertificateValidityWarning,
+    PicklingWarning,
     PKIClient,
 )
 from httpx_pki._source import SourceRef
@@ -200,7 +202,7 @@ def test_from_env_reload(
 
 def test_strict_validity_raises_before_sending() -> None:
     bundle = make_client_cert("old", expired=True)
-    with pytest.warns(UserWarning, match="expired"):
+    with pytest.warns(CertificateValidityWarning, match="expired"):
         session = PKIClient(
             bundle.pkcs12(),
             password=b"",
@@ -240,7 +242,7 @@ def test_pickle_preserves_rotation_config(ca: Signed, cert_file: Path) -> None:
 def test_unpicklable_source_dropped_with_warning(cert_file: Path) -> None:
     with PKIClient(cert_file) as session:
         session._source = SourceRef("winstore", {"predicate": lambda c: True})
-        with pytest.warns(UserWarning, match="not be reloadable"):
+        with pytest.warns(PicklingWarning, match="not be reloadable"):
             restored = pickle.loads(pickle.dumps(session))
     with restored:
         assert restored._source is None

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import certifi
 
-from ._exceptions import CertificateLoadError
+from ._exceptions import CertificateLoadError, TLSConfigWarning
 from ._keychain import MacPredicate
 from ._material import (
     CertSource,
@@ -152,6 +152,7 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
             "client certificate into it in place. Do not share this context with "
             "other clients -- use verify=True or a CA-bundle path (letting "
             "httpx-pki build a dedicated context) if it must stay cert-free.",
+            TLSConfigWarning,
             stacklevel=3,
         )
         return verify
@@ -164,6 +165,7 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
         warnings.warn(
             "verify=False disables server certificate verification; "
             "connections are vulnerable to man-in-the-middle attacks.",
+            TLSConfigWarning,
             stacklevel=3,
         )
         return ctx

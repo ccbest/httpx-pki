@@ -13,7 +13,11 @@ import pytest
 from httpx_pki import (
     AsyncPKIClient,
     CertificateLoadError,
+    CertificateValidityWarning,
+    PicklingWarning,
     PKIClient,
+    PKIWarning,
+    TLSConfigWarning,
     UnsupportedPlatformError,
 )
 from tests.conftest import CLIENT_CN, P12_PASSWORD, Signed
@@ -241,14 +245,22 @@ def test_cert_kwarg_rejected(client: Signed) -> None:
         )
 
 
+def test_warning_hierarchy() -> None:
+    # The categories are public API: importable from the package root, and all
+    # PKIWarning subclasses of UserWarning so generic filters keep matching.
+    for category in (CertificateValidityWarning, TLSConfigWarning, PicklingWarning):
+        assert issubclass(category, PKIWarning)
+    assert issubclass(PKIWarning, UserWarning)
+
+
 def test_verify_false_warns(client_p12: bytes) -> None:
-    with pytest.warns(UserWarning, match="verify=False"):
+    with pytest.warns(TLSConfigWarning, match="verify=False"):
         session = PKIClient(client_p12, password=P12_PASSWORD, verify=False)
     session.close()
 
 
 def test_custom_transport_warns(client_p12: bytes) -> None:
-    with pytest.warns(UserWarning, match="custom transport=/mounts="):
+    with pytest.warns(TLSConfigWarning, match="custom transport=/mounts="):
         session = PKIClient(
             client_p12, password=P12_PASSWORD, transport=httpx.HTTPTransport()
         )
@@ -256,7 +268,7 @@ def test_custom_transport_warns(client_p12: bytes) -> None:
 
 
 def test_custom_mounts_warns(client_p12: bytes) -> None:
-    with pytest.warns(UserWarning, match="custom transport=/mounts="):
+    with pytest.warns(TLSConfigWarning, match="custom transport=/mounts="):
         session = PKIClient(
             client_p12,
             password=P12_PASSWORD,
@@ -291,10 +303,10 @@ def test_no_transport_does_not_warn(client_p12: bytes) -> None:
 
 def test_verify_custom_context_not_pickled(client_p12: bytes) -> None:
     ctx = ssl.create_default_context()
-    with pytest.warns(UserWarning, match="pre-built ssl.SSLContext"):
+    with pytest.warns(TLSConfigWarning, match="pre-built ssl.SSLContext"):
         session = PKIClient(client_p12, password=P12_PASSWORD, verify=ctx)
     try:
-        with pytest.warns(UserWarning, match="custom ssl.SSLContext"):
+        with pytest.warns(PicklingWarning, match="custom ssl.SSLContext"):
             pickle.dumps(session)
     finally:
         session.close()

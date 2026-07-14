@@ -1,4 +1,4 @@
-"""Exceptions raised by httpx-pki."""
+"""Exceptions and warnings raised by httpx-pki."""
 
 from __future__ import annotations
 
@@ -49,4 +49,41 @@ class UnsupportedPlatformError(PKIError):
 
     For example, :meth:`PKIClient.from_windows_cert_store` is only available on
     Windows.
+    """
+
+
+class PKIWarning(UserWarning):
+    """Base class for all warnings emitted by httpx-pki.
+
+    Subclasses ``UserWarning`` so existing filters keep matching; filter on a
+    specific subclass to silence one concern without hiding the others::
+
+        warnings.filterwarnings("ignore", category=CertificateValidityWarning)
+    """
+
+
+class CertificateValidityWarning(PKIWarning):
+    """The client certificate is expired, not yet valid, or expiring soon.
+
+    Emitted when a session is built from (or reloaded to) a certificate whose
+    validity window is closed, has not opened, or ends within
+    ``warn_if_expires_within``.
+    """
+
+
+class TLSConfigWarning(PKIWarning):
+    """A TLS configuration choice that likely doesn't do what was intended.
+
+    Emitted for a custom ``transport=``/``mounts=`` that makes httpx ignore the
+    mounted client certificate, a pre-built ``ssl.SSLContext`` passed as
+    ``verify=`` (which is mutated in place), and ``verify=False``.
+    """
+
+
+class PicklingWarning(PKIWarning):
+    """Part of the client's configuration was dropped during pickling.
+
+    Emitted when a custom ``verify=`` SSL context or an unpicklable certificate
+    source cannot be serialized; the unpickled client works but falls back to
+    default server verification or loses :meth:`PKIClient.reload` support.
     """
