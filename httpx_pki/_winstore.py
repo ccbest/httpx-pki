@@ -21,12 +21,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from ._exceptions import (
-    AmbiguousCertificateError,
-    CertificateLoadError,
-    CertificateNotFoundError,
-    UnsupportedPlatformError,
-)
+from ._exceptions import CertificateLoadError, UnsupportedPlatformError
+from ._select import select_certificate
 
 Predicate = Callable[["WinCert"], bool]
 
@@ -43,10 +39,6 @@ class WinCert:
     friendly_name: str | None
     thumbprint: str
     handle: Any = None
-
-
-def _normalize_thumbprint(value: str) -> str:
-    return value.replace(":", "").replace(" ", "").upper()
 
 
 def select_windows_certificate(
@@ -66,49 +58,13 @@ def select_windows_certificate(
     Raises :class:`CertificateNotFoundError` if nothing matches and
     :class:`AmbiguousCertificateError` if more than one does.
     """
-    if thumbprint is not None:
-        target = _normalize_thumbprint(thumbprint)
-        matches = [c for c in candidates if c.thumbprint == target]
-    elif predicate is not None:
-        matches = [c for c in candidates if predicate(c)]
-    elif name is not None:
-        needle = name.lower()
-        matches = [
-            c
-            for c in candidates
-            if (c.subject_cn is not None and needle in c.subject_cn.lower())
-            or (c.friendly_name is not None and needle in c.friendly_name.lower())
-        ]
-    else:
-        matches = list(candidates)
-
-    if not matches:
-        raise CertificateNotFoundError(
-            _selector_repr(name, thumbprint, predicate)
-            + " matched no certificate in the store"
-        )
-    if len(matches) > 1:
-        listing = ", ".join(
-            f"{c.subject_cn or '<no CN>'} ({c.thumbprint})" for c in matches
-        )
-        raise AmbiguousCertificateError(
-            f"{_selector_repr(name, thumbprint, predicate)} matched "
-            f"{len(matches)} certificates: {listing}. "
-            "Narrow it with a more specific name or an exact thumbprint."
-        )
-    return matches[0]
-
-
-def _selector_repr(
-    name: str | None, thumbprint: str | None, predicate: Predicate | None
-) -> str:
-    if thumbprint is not None:
-        return f"thumbprint={thumbprint!r}"
-    if predicate is not None:
-        return "predicate"
-    if name is not None:
-        return f"name={name!r}"
-    return "no selector"
+    return select_certificate(
+        candidates,
+        name=name,
+        thumbprint=thumbprint,
+        predicate=predicate,
+        aliases=lambda c: (c.subject_cn, c.friendly_name),
+    )
 
 
 def list_windows_certificates(

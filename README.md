@@ -47,6 +47,7 @@ extension never matters:
 | **PEM bundle** (key + cert(s) in one file) | `PKIClient(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys |
 | **Separate cert + key** (PEM *or* DER) | `from_key_pair(...)` | optional `chain=` intermediates |
 | **Windows cert store** | `from_windows_cert_store(...)` | Windows only; see below |
+| **macOS keychain** | `from_macos_keychain(...)` | macOS only; see below |
 
 `PKIClient(source, password=...)` auto-detects PKCS#12 vs PEM, so you can point
 it at whatever you were handed. Use the explicit `from_pkcs12` / `from_pem`
@@ -136,6 +137,47 @@ Notes:
 - No password is involved: the cert is exported under a random, single-use
   password that never leaves the library.
 - `AsyncPKIClient.from_windows_cert_store(...)` is the async equivalent.
+
+### From the macOS keychain (macOS only)
+
+The macOS sibling of the Windows store: pull an **exportable** identity
+(certificate + private key) out of the default keychain search list, selecting
+by a case-insensitive substring of the subject common name or the keychain
+label:
+
+```python
+from httpx_pki import PKIClient
+
+with PKIClient.from_macos_keychain(name="ACME Client") as client:
+    client.get("https://mtls.example.com/")
+```
+
+Selection works exactly like the Windows store — `AmbiguousCertificateError`
+lists the candidates; narrow with an exact thumbprint or a predicate:
+
+```python
+PKIClient.from_macos_keychain(thumbprint="A1:B2:C3:...")
+PKIClient.from_macos_keychain(predicate=lambda c: c.label == "prod")
+```
+
+`list_macos_certificates()` returns a `MacCert` (subject CN, keychain label,
+SHA-1 thumbprint) per identity — metadata only, no key is exported — and
+`build_macos_ssl_context(...)` is the session-less seam, mirroring
+`build_windows_ssl_context`.
+
+Notes:
+
+- **macOS only** — calling it elsewhere raises `UnsupportedPlatformError`.
+- The private key must be exportable, and the keychain may require **user
+  consent** for the export. A headless session cannot grant consent — for
+  unattended use, import the certificate with access pre-granted
+  (`security import client.p12 -k login.keychain -A`) or click "Always Allow"
+  once in the consent dialog.
+- No password is involved: the identity is exported under a random,
+  single-use password that never leaves the library.
+- `reload()` re-exports from the keychain with the same selector; there is no
+  file to watch, so `auto_reload` is not available.
+- `AsyncPKIClient.from_macos_keychain(...)` is the async equivalent.
 
 ### From environment variables
 

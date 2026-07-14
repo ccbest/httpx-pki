@@ -12,8 +12,13 @@ from ._exceptions import (
     PKIError,
     UnsupportedPlatformError,
 )
+from ._keychain import (
+    MacCert,
+    list_macos_certificates,
+    select_macos_certificate,
+)
 from ._material import CertInfo, Material, cert_info
-from ._ssl import build_ssl_context, build_windows_ssl_context
+from ._ssl import build_macos_ssl_context, build_ssl_context, build_windows_ssl_context
 from ._winstore import (
     WinCert,
     list_windows_certificates,
@@ -24,7 +29,10 @@ __all__ = [
     "PKIClient",
     "AsyncPKIClient",
     "build_ssl_context",
+    "build_macos_ssl_context",
     "build_windows_ssl_context",
+    "list_macos_certificates",
+    "select_macos_certificate",
     "list_windows_certificates",
     "select_windows_certificate",
     "PKIError",
@@ -38,6 +46,7 @@ __all__ = [
     "Material",
     "cert_info",
     "WinCert",
+    "MacCert",
 ]
 
 __version__ = "0.3.0"
