@@ -301,6 +301,23 @@ def test_no_transport_does_not_warn(client_p12: bytes) -> None:
     session.close()
 
 
+def test_verify_system_pickles_cleanly(client_p12: bytes) -> None:
+    # verify="system" is a plain string, so -- unlike a custom SSLContext --
+    # it survives pickling without any PicklingWarning fallback.
+    pytest.importorskip("truststore")
+    import warnings
+
+    session = PKIClient(client_p12, password=P12_PASSWORD, verify="system")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            restored = pickle.loads(pickle.dumps(session))
+    finally:
+        session.close()
+    with restored:
+        assert restored._verify_policy == "system"
+
+
 def test_verify_custom_context_not_pickled(client_p12: bytes) -> None:
     ctx = ssl.create_default_context()
     with pytest.warns(TLSConfigWarning, match="pre-built ssl.SSLContext"):

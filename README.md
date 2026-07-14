@@ -32,7 +32,9 @@ bytes. `httpx-pki` is that missing piece.
 pip install httpx-pki
 ```
 
-Requires Python 3.10+, `httpx>=0.28`, and `cryptography>=44`.
+Requires Python 3.10+, `httpx>=0.28`, and `cryptography>=44`. To verify servers
+against the OS trust store (`verify="system"`, for corporate/private CAs),
+install the extra: `pip install httpx-pki[system]`.
 
 ## Supported formats
 
@@ -196,7 +198,7 @@ with PKIClient.from_env() as client:        # reads HTTPX_PKI_* by default
 | `HTTPX_PKI_PASSWORD` | password for the cert / key (optional) |
 | `HTTPX_PKI_KEY` | path to a separate private key; switches to cert+key mode |
 | `HTTPX_PKI_CHAIN` | intermediates to present, in addition to any carried by `CERT` |
-| `HTTPX_PKI_CA` | CA bundle for **server** trust (`verify=`) |
+| `HTTPX_PKI_CA` | CA bundle for **server** trust (`verify=`), or the literal `system` for the OS trust store |
 
 Pass a different `prefix=` to namespace per service (`PKIClient.from_env("MYAPP_")`).
 
@@ -223,11 +225,37 @@ PKIClient("client.p12", base_url="https://api.example.com",
 Mounting *your* client certificate and verifying the *server's* certificate are
 independent. `verify` behaves just like httpx — `True` (default, uses certifi),
 `False` to disable (with a warning), a path to a CA bundle, or a ready-made
-`ssl.SSLContext`:
+`ssl.SSLContext` — plus one httpx-pki extra: the literal `"system"` for the
+operating-system trust store:
 
 ```python
 PKIClient("client.p12", verify="/etc/ssl/custom-ca.pem")
 ```
+
+#### Corporate / private CAs: `verify="system"`
+
+If the server's certificate chains to a private CA distributed through your OS
+(group policy, MDM, a TLS-inspecting proxy), certifi has never heard of it —
+that's the classic `CERTIFICATE_VERIFY_FAILED: unable to get local issuer
+certificate` right after your client certificate loaded fine. `verify="system"`
+verifies the server against the **operating-system trust store** instead
+(Windows CryptoAPI / macOS Security framework / OpenSSL's system CA paths on
+Linux), via the same [truststore](https://truststore.readthedocs.io/) machinery
+pip uses by default:
+
+```bash
+pip install httpx-pki[system]
+```
+
+```python
+PKIClient("client.p12", password="secret", verify="system")
+```
+
+Works with every constructor and `build_ssl_context`; `HTTPX_PKI_CA=system`
+selects it for `from_env`. Unlike a custom `ssl.SSLContext`, it survives
+pickling. It is never chosen implicitly — `verify=True` always means certifi,
+exactly like httpx, even when truststore is installed. (A CA-bundle *file*
+literally named `system` can still be passed as `Path("system")`.)
 
 > **Passing your own `ssl.SSLContext`?** `httpx-pki` loads the client certificate
 > into that exact object (it can't be copied), so don't reuse a shared context

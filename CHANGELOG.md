@@ -6,6 +6,14 @@ the git history for the fine print.
 
 ## Unreleased
 
+- `verify="system"` verifies servers against the **operating-system trust
+  store** (Windows CryptoAPI / macOS Security framework / OpenSSL's system CA
+  paths on Linux) via the optional [truststore](https://truststore.readthedocs.io/)
+  dependency — install with `pip install httpx-pki[system]`. Built for
+  corporate/private CAs distributed through the OS, which certifi never
+  carries. Works with every constructor and `build_ssl_context`;
+  `HTTPX_PKI_CA=system` selects it for `from_env`; survives pickling. Never
+  chosen implicitly: `verify=True` still means certifi, exactly like httpx.
 - Warnings now carry filterable categories: `PKIWarning` (base, a
   `UserWarning`) with `CertificateValidityWarning`, `TLSConfigWarning`, and
   `PicklingWarning` subclasses — silence one concern (e.g. "expires soon")

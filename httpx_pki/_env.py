@@ -11,7 +11,8 @@ the environment rather than code. Given a *prefix* (default ``HTTPX_PKI_``):
 ``{prefix}CHAIN``             path to intermediate certificates to present to
                               the server, in addition to any carried by ``CERT``
 ``{prefix}CA``                path to a CA bundle used for *server* trust
-                              (``verify=``); absent means default trust
+                              (``verify=``), or the literal ``system`` for
+                              the OS trust store; absent means default trust
 ============================  ====================================================
 """
 

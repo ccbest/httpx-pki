@@ -32,6 +32,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+system = [
+    "truststore>=0.10",
+]
 dev = [
     "mypy>=1.11",
     "pylint>=4",
@@ -39,6 +42,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=5",
     "ruff>=0.6",
+    "truststore>=0.10",
 ]
 
 [project.urls]

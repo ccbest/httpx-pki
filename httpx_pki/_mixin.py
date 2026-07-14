@@ -243,7 +243,8 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         Reads ``{prefix}CERT`` (required), ``{prefix}PASSWORD``, ``{prefix}KEY``
         (switches to a separate cert+key), ``{prefix}CHAIN`` (extra
-        intermediates to present), and ``{prefix}CA`` (server-trust bundle).
+        intermediates to present), and ``{prefix}CA`` (server-trust bundle
+        path, or the literal ``system`` for the OS trust store).
         An explicit *verify* overrides ``{prefix}CA``. Reloading re-reads the
         environment; ``auto_reload`` watches the files the variables pointed
         at when the session was built. *warn_if_expires_within* warns about a
