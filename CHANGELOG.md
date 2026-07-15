@@ -4,7 +4,7 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
-## Unreleased
+## 0.6.0 — 2026-07-15
 
 - **PKCS#7 (`.p7b`/`.p7c`) certificate bundles** are accepted anywhere
   certificates (not keys) are accepted, in DER or PEM: `certificate=` and
