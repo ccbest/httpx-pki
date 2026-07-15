@@ -4,12 +4,20 @@ on:
   release:
     types: [published]
 
+# Least privilege: the build job only reads the repo. The publish job adds
+# id-token: write for itself (job-level permissions replace, not extend).
+permissions:
+  contents: read
+
+# All actions are pinned to full commit SHAs (the tag is a comment): tags are
+# mutable and have been repointed at malicious commits in real supply-chain
+# attacks. Dependabot (.github/dependabot.yml) keeps the pins current.
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -35,7 +43,7 @@ jobs:
           python -m build
           twine check dist/*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/
@@ -51,9 +59,13 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          # PEP 740 digital attestations: on by default with Trusted
+          # Publishing, stated explicitly so it can't regress silently.
+          attestations: true

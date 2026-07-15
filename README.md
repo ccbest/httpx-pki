@@ -572,6 +572,21 @@ memory. Some adjacent things it deliberately does **not** do:
   where the platform verifier applies its own revocation policy; beyond that,
   revocation is out of scope.
 
+## Supply chain
+
+A library that handles client private keys deserves scrutiny of how it is
+built and shipped. Releases are published to PyPI exclusively from GitHub
+Actions via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
+(OIDC — no long-lived PyPI tokens) with [PEP 740](https://peps.python.org/pep-0740/)
+attestations, from a tagged commit whose version is verified against the
+package's `__version__` at build time. The runtime dependency footprint is
+limited to `httpx`, `cryptography`, and `certifi`. As with any
+security-sensitive dependency, install via a lockfile that records hashes
+(uv, poetry, or `pip-tools` with `pip install --require-hashes`).
+
+See [SECURITY.md](https://github.com/ccbest/httpx-pki/blob/main/SECURITY.md)
+for the full policy and how to report a vulnerability.
+
 ## License
 
 MIT
