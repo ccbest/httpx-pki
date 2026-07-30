@@ -31,6 +31,7 @@ from ._material import (
     parse_pkcs12,
     read_source,
 )
+from ._pkcs12 import IdentitySelector, UsageSelector
 from ._winstore import Predicate
 
 # Accepted values for ``verify``: ``True`` (default CA bundle), ``False``
@@ -40,11 +41,14 @@ from ._winstore import Predicate
 VerifyTypes = bool | str | Path | ssl.SSLContext
 
 
-def build_ssl_context(
+def build_ssl_context(  # pylint: disable=too-many-arguments
     cert: CertSource,
     password: Password = None,
     *,
     verify: VerifyTypes = True,
+    identity: IdentitySelector | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
 ) -> ssl.SSLContext:
     """Build a client-certificate ``ssl.SSLContext`` from a cert source.
 
@@ -58,8 +62,18 @@ def build_ssl_context(
 
         ctx = build_ssl_context("client.p12", password="secret")
         client = httpx.Client(verify=ctx)
+
+    ``identity`` / ``key_usage`` / ``extended_key_usage`` choose between the
+    identities of a multi-identity PKCS#12 bundle, exactly as on
+    :meth:`~httpx_pki.PKIClient.from_pkcs12`.
     """
-    material = load_material(read_source(cert), encode_password(password))
+    material = load_material(
+        read_source(cert),
+        encode_password(password),
+        identity=identity,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
+    )
     return _context_from_material(material, verify)
 
 

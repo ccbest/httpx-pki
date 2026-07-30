@@ -4,6 +4,48 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
+## 0.7.0 — Unreleased
+
+- **Multi-identity PKCS#12 bundles** are now handled properly. A `.p12` can
+  hold more than one identity (a key plus its certificate) — the dual key pair
+  a CA issues when it escrows the encryption key but not the signing key, as
+  Entrust, PIV/CAC, S/MIME key archival, and several national eID schemes do.
+  `list_pkcs12_identities()` reports what a file holds (index, friendly name,
+  key usage, extended key usage, fingerprints — never the private keys), and
+  every PKCS#12 entry point — `PKIClient(...)`, `from_pkcs12`, `from_env`,
+  `build_ssl_context` — takes `identity=` (file position, name or fingerprint,
+  or a predicate over the new `P12Identity`), `key_usage=`, and
+  `extended_key_usage=`, which intersect when combined. The selection is
+  recorded on the source, so `reload()` / `auto_reload` re-select the same
+  identity after a rotation even if the new file orders them differently, and
+  it survives pickling. `HTTPX_PKI_IDENTITY`, `HTTPX_PKI_KEY_USAGE`, and
+  `HTTPX_PKI_EXT_KEY_USAGE` do the same for `from_env`.
+- **Behavior change:** loading a bundle that holds several identities without a
+  selector now raises `AmbiguousCertificateError`, listing the identities and
+  what distinguishes them, instead of silently presenting whichever one the
+  file happened to store first. Bundles with a single identity — very nearly
+  all of them — are completely unaffected. (`cryptography` returns only the
+  first key in a file and discards the rest, so the previous behavior was an
+  arbitrary choice between real alternatives.)
+- **Bug fix:** a second identity's certificate is no longer presented to the
+  server as a *chain* certificate. It is a leaf certificate of its own, not an
+  intermediate, and sending it can make a strict server reject the chain.
+- A **renewed certificate stored alongside the one it replaces** — two
+  certificates over a single key pair, which is what renewing rather than
+  rekeying produces — is now recognized as two identities rather than one
+  identity plus a stray chain certificate. Since nothing but the validity
+  window distinguishes them, the identity listing in the error message carries
+  each certificate's expiry.
+- `CertInfo` now reports `key_usage` and `extended_key_usage` — the extensions
+  that tell the halves of a dual key pair apart — for every certificate, not
+  just those inside a PKCS#12 bundle. Usage names are accepted in camelCase as
+  well as snake_case, extended usages also as dotted OIDs, and `nonRepudiation`
+  as a spelling of the bit X.509 renamed to `contentCommitment`.
+- `httpx_pki.testing.make_pkcs12()` writes multi-identity bundles (in the
+  layout OpenSSL and Windows produce), which neither `cryptography` nor the
+  `openssl` command line can do; `make_client_cert()` gained `key_usage=` and
+  `extended_key_usage=` overrides to mint the two halves.
+
 ## 0.6.0 — 2026-07-15
 
 - **PKCS#7 (`.p7b`/`.p7c`) certificate bundles** are accepted anywhere

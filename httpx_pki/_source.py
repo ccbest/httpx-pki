@@ -47,6 +47,18 @@ class SourceRef:
     password: bytes | None = None
 
 
+def _selectors(args: dict[str, Any]) -> dict[str, Any]:
+    """The PKCS#12 identity selectors recorded on a ref.
+
+    ``.get`` rather than indexing: refs pickled before identity selection
+    existed carry only the certificate arguments, and must keep reloading.
+    """
+    return {
+        name: args.get(name)
+        for name in ("identity", "key_usage", "extended_key_usage")
+    }
+
+
 def resolve_source(  # pylint: disable=too-many-return-statements
     ref: SourceRef, password: bytes | None = None
 ) -> Material:
@@ -59,9 +71,9 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     pw = password if password is not None else ref.password
     args = ref.args
     if ref.kind == "auto":
-        return load_material(read_source(args["cert"]), pw)
+        return load_material(read_source(args["cert"]), pw, **_selectors(args))
     if ref.kind == "pkcs12":
-        return parse_pkcs12(read_source(args["cert"]), pw)
+        return parse_pkcs12(read_source(args["cert"]), pw, **_selectors(args))
     if ref.kind == "pem":
         return parse_pem_bundle(read_source(args["source"]), pw)
     if ref.kind == "key_pair":

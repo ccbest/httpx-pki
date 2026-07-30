@@ -407,3 +407,38 @@ async def test_async_from_key_pair(client: Signed, ca: Signed) -> None:
 async def test_async_from_windows_cert_store_raises_off_windows() -> None:
     with pytest.raises(UnsupportedPlatformError):
         AsyncPKIClient.from_windows_cert_store(name="anything")
+
+
+def test_pickle_preserves_the_identity_selection(dual_p12: bytes) -> None:
+    session = PKIClient(
+        dual_p12, password=P12_PASSWORD, key_usage="digital_signature"
+    )
+    restored = pickle.loads(pickle.dumps(session))
+    try:
+        assert restored._material == session._material
+        assert restored._source is not None
+        assert restored._source.args["key_usage"] == "digital_signature"
+    finally:
+        session.close()
+        restored.close()
+
+
+def test_pickle_drops_an_unpicklable_identity_predicate(dual_p12: bytes) -> None:
+    session = PKIClient(
+        dual_p12,
+        password=P12_PASSWORD,
+        identity=lambda i: i.friendly_name == "Encryption",
+    )
+    try:
+        with pytest.warns(PicklingWarning, match="certificate source"):
+            data = pickle.dumps(session)
+        restored = pickle.loads(data)
+        try:
+            # The chosen certificate survives (the material is pickled); only
+            # the ability to reload from the source is lost.
+            assert restored._material == session._material
+            assert restored._source is None
+        finally:
+            restored.close()
+    finally:
+        session.close()

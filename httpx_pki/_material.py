@@ -13,6 +13,7 @@ import datetime
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -20,9 +21,13 @@ from cryptography.hazmat.primitives.asymmetric.types import (
     PrivateKeyTypes,
     PublicKeyTypes,
 )
-from cryptography.hazmat.primitives.serialization import pkcs7, pkcs12
+from cryptography.hazmat.primitives.serialization import pkcs7
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from ._exceptions import CertificateLoadError
+
+if TYPE_CHECKING:  # imported for typing only -- see parse_pkcs12
+    from ._pkcs12 import IdentitySelector, UsageSelector
 
 # A source of bytes: either the raw bytes themselves, or a filesystem path
 # (``str`` or :class:`pathlib.Path`) to read them from.
@@ -53,6 +58,15 @@ class CertInfo:  # pylint: disable=too-many-instance-attributes
     so it can be compared against ``list_windows_certificates()`` /
     ``list_macos_certificates()`` output or passed to a ``thumbprint=``
     selector; ``fingerprint_sha256`` is the modern identifier for logs.
+
+    ``key_usage`` holds the asserted KeyUsage bits under the
+    :class:`cryptography.x509.KeyUsage` attribute names (``digital_signature``,
+    ``key_encipherment``, ...) and ``extended_key_usage`` the ExtendedKeyUsage
+    entries as lowercase names (``client_auth``, ``email_protection``, ...),
+    falling back to a dotted OID string for OIDs ``cryptography`` doesn't name.
+    Both are empty when the certificate carries no such extension. They are
+    what tells the two identities of a dual-key-pair PKCS#12 apart; see
+    :func:`~httpx_pki.list_pkcs12_identities`.
     """
 
     common_name: str | None
@@ -66,6 +80,8 @@ class CertInfo:  # pylint: disable=too-many-instance-attributes
     fingerprint_sha1: str
     subject_alt_names: list[str]
     dns_names: list[str] = field(default_factory=list)
+    key_usage: frozenset[str] = frozenset()
+    extended_key_usage: list[str] = field(default_factory=list)
 
     @property
     def serial_number_hex(self) -> str:
@@ -101,26 +117,31 @@ def encode_password(password: Password) -> bytes | None:
     )
 
 
-def parse_pkcs12(data: bytes, password: bytes | None) -> Material:
-    """Extract decrypted PEM material from a PKCS#12 blob."""
-    try:
-        key, cert, additional = pkcs12.load_key_and_certificates(data, password)
-    except (ValueError, TypeError) as exc:
-        raise CertificateLoadError(_pkcs12_failure_message(data)) from exc
+def parse_pkcs12(
+    data: bytes,
+    password: bytes | None,
+    *,
+    identity: IdentitySelector | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
+) -> Material:
+    """Extract decrypted PEM material for one identity in a PKCS#12 blob.
 
-    if key is None:
-        raise CertificateLoadError("PKCS#12 data contains no private key")
-    if cert is None:
-        raise CertificateLoadError("PKCS#12 data contains no certificate")
+    A bundle may hold several identities (see :mod:`httpx_pki._pkcs12`); the
+    selectors pick which one to present, and are required when there is more
+    than one.
+    """
+    # Deferred: _pkcs12 builds on this module's helpers, so importing it here
+    # rather than at module scope keeps the dependency one-way.
+    from ._pkcs12 import pkcs12_material
 
-    key_pem = key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
+    return pkcs12_material(
+        data,
+        password,
+        identity=identity,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
     )
-    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-    ca_pems = [c.public_bytes(serialization.Encoding.PEM) for c in additional]
-    return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
 
 
 def _pkcs12_failure_message(data: bytes) -> str:
@@ -204,16 +225,64 @@ def parse_pem_bundle(data: bytes, password: bytes | None) -> Material:
     return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
 
 
-def load_material(data: bytes, password: bytes | None) -> Material:
+def load_material(
+    data: bytes,
+    password: bytes | None,
+    *,
+    identity: IdentitySelector | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
+) -> Material:
     """Load material from a single source, detecting the encoding by content.
 
     PEM (text, recognized by its ``-----BEGIN`` armor) is parsed as a bundle;
     anything else is treated as binary PKCS#12. The file *extension* is
     irrelevant -- only the bytes matter.
+
+    The identity selectors apply to PKCS#12 data. A PEM bundle holds exactly
+    one key by construction, so a selector that doesn't match its single
+    identity raises rather than being quietly ignored.
     """
     if b"-----BEGIN" in data:
-        return parse_pem_bundle(data, password)
-    return parse_pkcs12(data, password)
+        material = parse_pem_bundle(data, password)
+        if identity is None and key_usage is None and extended_key_usage is None:
+            return material
+        return _select_pem_identity(
+            material, identity, key_usage, extended_key_usage
+        )
+    return parse_pkcs12(
+        data,
+        password,
+        identity=identity,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
+    )
+
+
+def _select_pem_identity(
+    material: Material,
+    identity: IdentitySelector | None,
+    key_usage: UsageSelector | None,
+    extended_key_usage: UsageSelector | None,
+) -> Material:
+    """Apply an identity selector to the one identity a PEM bundle holds."""
+    from ._pkcs12 import P12Identity, select_identity
+
+    cert = _load_certificate(material.cert_pem)
+    select_identity(
+        [
+            P12Identity(
+                index=0,
+                friendly_name=None,
+                certificate=cert,
+                info=certificate_info(cert),
+            )
+        ],
+        identity=identity,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
+    )
+    return material
 
 
 def _spki(public_key: PublicKeyTypes) -> bytes:
@@ -387,6 +456,54 @@ def normalize_pem(
     return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
 
 
+# The KeyUsage bits, under the cryptography attribute names, in RFC 5280 order.
+KEY_USAGE_NAMES = (
+    "digital_signature",
+    "content_commitment",
+    "key_encipherment",
+    "data_encipherment",
+    "key_agreement",
+    "key_cert_sign",
+    "crl_sign",
+    "encipher_only",
+    "decipher_only",
+)
+
+# OID -> lowercase name, for the extended key usages cryptography names.
+_EKU_NAMES: dict[x509.ObjectIdentifier, str] = {
+    getattr(ExtendedKeyUsageOID, attr): attr.lower()
+    for attr in dir(ExtendedKeyUsageOID)
+    if not attr.startswith("_")
+}
+
+
+def _key_usage_names(cert: x509.Certificate) -> frozenset[str]:
+    """The asserted KeyUsage bits as attribute names (empty if no extension)."""
+    try:
+        usage = cert.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return frozenset()
+    # encipher_only/decipher_only are only defined when keyAgreement is set --
+    # cryptography raises ValueError rather than returning False otherwise.
+    names = {name for name in KEY_USAGE_NAMES[:7] if getattr(usage, name)}
+    if usage.key_agreement:
+        names |= {
+            name for name in KEY_USAGE_NAMES[7:] if getattr(usage, name)
+        }
+    return frozenset(names)
+
+
+def _extended_key_usage_names(cert: x509.Certificate) -> list[str]:
+    """The ExtendedKeyUsage entries as names, dotted OIDs when unnamed."""
+    try:
+        usages = cert.extensions.get_extension_for_class(
+            x509.ExtendedKeyUsage
+        ).value
+    except x509.ExtensionNotFound:
+        return []
+    return [_EKU_NAMES.get(oid, oid.dotted_string) for oid in usages]
+
+
 def _name_cn(name: x509.Name) -> str | None:
     """The Common Name attribute of an x509 name (``None`` if absent)."""
     cn_attrs = name.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
@@ -398,8 +515,11 @@ def _name_cn(name: x509.Name) -> str | None:
 
 def cert_info(cert_pem: bytes) -> CertInfo:
     """Summarize subject, issuer, validity, serial, fingerprints, and SANs."""
-    cert = _load_certificate(cert_pem)
+    return certificate_info(_load_certificate(cert_pem))
 
+
+def certificate_info(cert: x509.Certificate) -> CertInfo:
+    """:func:`cert_info` for an already-parsed certificate."""
     dns_names: list[str] = []
     sans: list[str] = []
     try:
@@ -428,4 +548,6 @@ def cert_info(cert_pem: bytes) -> CertInfo:
         fingerprint_sha1=cert.fingerprint(hashes.SHA1()).hex().upper(),
         subject_alt_names=sans,
         dns_names=dns_names,
+        key_usage=_key_usage_names(cert),
+        extended_key_usage=_extended_key_usage_names(cert),
     )

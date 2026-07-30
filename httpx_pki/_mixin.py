@@ -45,6 +45,7 @@ from ._material import (
     parse_pkcs12,
     read_source,
 )
+from ._pkcs12 import IdentitySelector, UsageSelector
 from ._source import (
     SourceRef,
     WatchSignature,
@@ -116,18 +117,26 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         password: Password = None,
         *,
         verify: VerifyTypes = True,
+        identity: IdentitySelector | None = None,
+        key_usage: UsageSelector | None = None,
+        extended_key_usage: UsageSelector | None = None,
         warn_if_expires_within: datetime.timedelta | None = None,
         auto_reload: bool | datetime.timedelta = False,
         strict_validity: bool = False,
         **kwargs: Any,
     ) -> None:
         encoded = encode_password(password)
-        material = load_material(read_source(cert), encoded)
+        selectors: dict[str, Any] = {
+            "identity": identity,
+            "key_usage": key_usage,
+            "extended_key_usage": extended_key_usage,
+        }
+        material = load_material(read_source(cert), encoded, **selectors)
         self._apply_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("auto", {"cert": cert}, encoded),
+            source=SourceRef("auto", {"cert": cert, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -268,6 +277,9 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         password: Password = None,
         *,
         verify: VerifyTypes = True,
+        identity: IdentitySelector | None = None,
+        key_usage: UsageSelector | None = None,
+        extended_key_usage: UsageSelector | None = None,
         warn_if_expires_within: datetime.timedelta | None = None,
         auto_reload: bool | datetime.timedelta = False,
         strict_validity: bool = False,
@@ -275,16 +287,37 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     ) -> _S:
         """Build a session from a PKCS#12 bundle (path or bytes).
 
+        A bundle holding more than one identity -- a dual key pair, where the
+        CA issued separate signing and encryption certificates -- requires a
+        selector saying which to present, or
+        :class:`~httpx_pki.AmbiguousCertificateError` is raised rather than an
+        arbitrary one being picked. ``identity`` takes the file position, a
+        case-insensitive substring of the friendly name / common name / subject,
+        an exact SHA-1 or SHA-256 fingerprint, or a predicate over
+        :class:`~httpx_pki.P12Identity`; ``key_usage`` and
+        ``extended_key_usage`` require the named usages, which is usually what
+        separates the two::
+
+            PKIClient.from_pkcs12(
+                "corp.p12", password=pw, key_usage="digital_signature"
+            )
+
+        See :func:`~httpx_pki.list_pkcs12_identities` for what a file holds.
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
         """
         encoded = encode_password(password)
-        material = parse_pkcs12(read_source(cert), encoded)
+        selectors: dict[str, Any] = {
+            "identity": identity,
+            "key_usage": key_usage,
+            "extended_key_usage": extended_key_usage,
+        }
+        material = parse_pkcs12(read_source(cert), encoded, **selectors)
         return cls._from_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("pkcs12", {"cert": cert}, encoded),
+            source=SourceRef("pkcs12", {"cert": cert, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
