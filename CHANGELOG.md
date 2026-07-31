@@ -6,6 +6,25 @@ the git history for the fine print.
 
 ## 0.7.0 — Unreleased
 
+- **httpx2 support.** httpx development continues under pydantic's stewardship
+  as [httpx2](https://github.com/pydantic/httpx2), and httpx-pki now works with
+  either package: when httpx2 is importable it is preferred (`PKIClient` /
+  `AsyncPKIClient` subclass `httpx2.Client` / `httpx2.AsyncClient`), otherwise
+  httpx-pki binds to httpx as before. The new `httpx_pki.HTTP_BACKEND` reports
+  which backend was resolved, and the `HTTPX_PKI_BACKEND` environment variable
+  (`httpx` or `httpx2`) forces the choice — the escape hatch for environments
+  where httpx2 arrives as a transitive dependency but existing code expects the
+  httpx base classes. httpx-pki never touches `sys.modules`: your own
+  `import httpx` is not redirected. Install the backend with
+  `pip install httpx-pki[httpx2]`. (0.8 will swap the roles: httpx2 becomes the
+  required dependency, httpx the supported fallback.)
+- **`verify="certifi"`** pins the certifi CA bundle by name — today a synonym
+  for `verify=True`, everywhere `verify` is accepted (constructors,
+  `build_ssl_context`, `HTTPX_PKI_CA=certifi`). It exists because 0.8 will flip
+  the `verify=True` default from certifi to the OS trust store to match httpx2;
+  callers who want the certifi bundle regardless can start saying so now.
+  `verify="system"` is unchanged — and no longer needs the `[system]` extra
+  when httpx2 is installed, since truststore is one of httpx2's dependencies.
 - **Multi-identity PKCS#12 bundles** are now handled properly. A `.p12` can
   hold more than one identity (a key plus its certificate) — the dual key pair
   a CA issues when it escrows the encryption key but not the signing key, as

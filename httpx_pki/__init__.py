@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ._client import AsyncPKIClient, PKIClient
+from ._compat import HTTP_BACKEND
 from ._exceptions import (
     AmbiguousCertificateError,
     CertificateExpiredError,
@@ -34,6 +35,7 @@ from ._winstore import (
 __all__ = [
     "PKIClient",
     "AsyncPKIClient",
+    "HTTP_BACKEND",
     "build_ssl_context",
     "build_macos_ssl_context",
     "build_windows_ssl_context",

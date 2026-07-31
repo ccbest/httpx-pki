@@ -7,7 +7,6 @@ import ssl
 import sys
 from pathlib import Path
 
-import httpx
 import pytest
 
 from httpx_pki import (
@@ -20,6 +19,7 @@ from httpx_pki import (
     TLSConfigWarning,
     UnsupportedPlatformError,
 )
+from httpx_pki._compat import httpx
 from tests.conftest import CLIENT_CN, P12_PASSWORD, Signed
 
 

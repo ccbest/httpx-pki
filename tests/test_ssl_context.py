@@ -7,7 +7,6 @@ import ssl
 import sys
 from pathlib import Path
 
-import httpx
 import pytest
 from cryptography.hazmat.primitives.serialization import Encoding, pkcs7
 
@@ -17,6 +16,7 @@ from httpx_pki import (
     TLSConfigWarning,
     build_ssl_context,
 )
+from httpx_pki._compat import httpx
 from tests.conftest import P12_PASSWORD, Signed
 
 
@@ -129,6 +129,38 @@ def test_verify_system_honors_sslkeylogfile(
     monkeypatch.setenv("SSLKEYLOGFILE", str(keylog))
     ctx = build_ssl_context(client_p12, password=P12_PASSWORD, verify="system")
     assert ctx.keylog_filename == str(keylog)
+
+
+# -- verify="certifi" (pin the certifi bundle by name) -----------------------
+
+
+def test_verify_certifi_matches_default_trust(client_p12: bytes) -> None:
+    # "certifi" pins today's verify=True behavior by name -- the escape hatch
+    # for when 0.8 flips the True default to the OS trust store.
+    default = build_ssl_context(client_p12, password=P12_PASSWORD)
+    pinned = build_ssl_context(client_p12, password=P12_PASSWORD, verify="certifi")
+    assert isinstance(pinned, ssl.SSLContext)
+    assert pinned.check_hostname is True
+    assert pinned.cert_store_stats() == default.cert_store_stats()
+
+
+def test_verify_certifi_rejects_private_ca_server(
+    mtls_server: object, client_p12: bytes
+) -> None:
+    # certifi carries only public CAs, so the throwaway test CA signing the
+    # server certificate must fail the handshake -- proving the certifi bundle
+    # (not the test CA file) is making the trust decision.
+    server = mtls_server
+    with PKIClient(client_p12, password=P12_PASSWORD, verify="certifi") as session:
+        with pytest.raises(httpx.ConnectError):
+            session.get(server.url)  # type: ignore[attr-defined]
+
+
+def test_verify_path_named_certifi_is_a_file(client_p12: bytes) -> None:
+    # Like "system", the literal is str-only; Path("certifi") still means a
+    # CA-bundle file named "certifi" (here: missing).
+    with pytest.raises(CertificateLoadError, match="could not load CA bundle"):
+        build_ssl_context(client_p12, password=P12_PASSWORD, verify=Path("certifi"))
 
 
 # -- memfd staging: the decrypted key stays off disk on Linux ----------------

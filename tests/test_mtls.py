@@ -5,10 +5,10 @@ from __future__ import annotations
 import pickle
 import ssl
 
-import httpx
 import pytest
 
 from httpx_pki import AsyncPKIClient, PKIClient
+from httpx_pki._compat import httpx
 from tests.conftest import P12_PASSWORD, MTLSServer
 
 

@@ -4,6 +4,10 @@ Both classes are thin: ``__init__``, the ``from_*`` alternate constructors, and
 all certificate behavior live on :class:`~httpx_pki._mixin._PKIMixin`. Each
 class contributes only the binding to its httpx base (:meth:`_httpx_init`) and
 the per-request preflight hook in :meth:`send`.
+
+``httpx`` here is the resolved backend from :mod:`~httpx_pki._compat` -- the
+httpx2 package when installed, httpx otherwise -- so the session classes
+subclass whichever client the environment provides.
 """
 
 from __future__ import annotations
@@ -11,8 +15,7 @@ from __future__ import annotations
 import ssl
 from typing import Any
 
-import httpx
-
+from ._compat import httpx
 from ._mixin import _PKIMixin
 
 

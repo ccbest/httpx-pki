@@ -35,6 +35,12 @@ dependencies = [
 system = [
     "truststore>=0.10",
 ]
+# The httpx2 backend (preferred over httpx when importable). Package metadata
+# cannot express "httpx OR httpx2", so httpx stays a required dependency for
+# 0.7; 0.8 swaps the two.
+httpx2 = [
+    "httpx2>=2.9",
+]
 dev = [
     "mypy>=1.11",
     "pylint>=4",
