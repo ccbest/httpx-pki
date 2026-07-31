@@ -50,3 +50,23 @@ async def test_mtls_async_request_succeeds(
         resp = await session.get(mtls_server.url)
         assert resp.status_code == 200
         assert resp.text == "mtls-ok"
+
+
+def test_mtls_presents_the_selected_identity(
+    mtls_server: MTLSServer, dual_p12: bytes
+) -> None:
+    # The proof that selection reaches the wire: the server reports the
+    # certificate it actually received, which must be the signing identity --
+    # not whichever the file happens to store first.
+    with PKIClient(
+        dual_p12,
+        password=P12_PASSWORD,
+        key_usage="digital_signature",
+        verify=str(mtls_server.ca_file),
+    ) as session:
+        resp = session.get(mtls_server.url)
+        assert resp.status_code == 200
+        assert (
+            resp.headers["X-Client-Fingerprint"]
+            == session.cert_info().fingerprint_sha256
+        )

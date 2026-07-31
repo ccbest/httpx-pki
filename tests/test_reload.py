@@ -20,7 +20,7 @@ from httpx_pki import (
     PKIClient,
 )
 from httpx_pki._source import SourceRef
-from httpx_pki.testing import make_client_cert
+from httpx_pki.testing import CertBundle, make_client_cert, make_pkcs12
 from tests.conftest import P12_PASSWORD, Signed, _sign
 
 
@@ -267,3 +267,63 @@ async def test_async_auto_reload(
         resp = await session.get(server.url)  # type: ignore[attr-defined]
         assert resp.status_code == 200
         assert session.cn == "rot-b"
+
+
+def _dual_p12(ca_bundle: CertBundle, *, encryption_first: bool = False) -> bytes:
+    """A fresh dual key pair, optionally with the identities swapped in file order."""
+    signing = make_client_cert(
+        "rot-dual",
+        ca=ca_bundle,
+        key_usage=["digital_signature"],
+        extended_key_usage=["client_auth"],
+    )
+    encryption = make_client_cert(
+        "rot-dual", ca=ca_bundle, key_usage=["key_encipherment"]
+    )
+    entries = [(signing, "Signature"), (encryption, "Encryption")]
+    if encryption_first:
+        entries.reverse()
+    return make_pkcs12(entries, password=P12_PASSWORD)
+
+
+def test_reload_keeps_the_selected_identity(
+    ca_bundle: CertBundle, tmp_path: Path
+) -> None:
+    path = tmp_path / "dual.p12"
+    path.write_bytes(_dual_p12(ca_bundle))
+    with PKIClient(
+        path, password=P12_PASSWORD, key_usage="digital_signature"
+    ) as session:
+        before = session.certificate.serial_number
+        # The rotated file lists the identities the other way round: a client
+        # that fell back to "whichever comes first" would now present the
+        # encryption certificate.
+        _rotate(path, _dual_p12(ca_bundle, encryption_first=True))
+        session.reload(password=P12_PASSWORD)
+        assert session.certificate.serial_number != before
+        assert session.cert_info().key_usage == frozenset({"digital_signature"})
+
+
+def test_auto_reload_keeps_the_selected_identity(
+    ca_bundle: CertBundle, tmp_path: Path, mtls_server: object
+) -> None:
+    server = mtls_server
+    path = tmp_path / "dual.p12"
+    path.write_bytes(_dual_p12(ca_bundle))
+    with PKIClient(
+        path,
+        password=P12_PASSWORD,
+        key_usage="digital_signature",
+        verify=str(server.ca_file),  # type: ignore[attr-defined]
+        auto_reload=datetime.timedelta(0),
+    ) as session:
+        assert session.get(server.url).status_code == 200  # type: ignore[attr-defined]
+        _rotate(path, _dual_p12(ca_bundle, encryption_first=True))
+        resp = session.get(server.url)  # type: ignore[attr-defined]
+        assert resp.status_code == 200
+        assert session.cert_info().key_usage == frozenset({"digital_signature"})
+        # The presented certificate is the reloaded signing one.
+        assert (
+            resp.headers["X-Client-Fingerprint"]
+            == session.cert_info().fingerprint_sha256
+        )

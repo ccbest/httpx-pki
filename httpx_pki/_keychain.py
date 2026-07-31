@@ -26,12 +26,14 @@ from __future__ import annotations
 import secrets
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from cryptography import x509
+
 from ._exceptions import CertificateLoadError, UnsupportedPlatformError
-from ._material import cert_info
-from ._select import select_certificate
+from ._material import CertInfo, _load_certificate, certificate_info
+from ._select import UsageSelector, _CertDetails, select_certificate
 
 MacPredicate = Callable[["MacCert"], bool]
 
@@ -47,35 +49,52 @@ _K_CF_STRING_ENCODING_UTF8 = 0x08000100
 
 
 @dataclass(frozen=True)
-class MacCert:
+class MacCert(_CertDetails):
     """A certificate identity discovered in the macOS keychain.
 
     ``label`` is the keychain item label (``kSecAttrLabel``), the analog of
     the Windows friendly name. ``handle`` is the retained ``SecIdentityRef``
     used to export the key; it is ``None`` for the synthetic candidates used
     in tests.
+
+    ``certificate`` and ``info`` carry the parsed certificate and its summary,
+    which is what makes ``key_usage`` / ``extended_key_usage`` selection (and
+    predicates over validity) possible. An identity whose certificate cannot
+    be read is skipped during enumeration, so both are populated in practice;
+    they are ``None`` only on records built by hand.
     """
 
     subject_cn: str | None
     label: str | None
     thumbprint: str
     handle: Any = None
+    # compare=False keeps these out of __eq__/__hash__: CertInfo holds lists,
+    # so including it would make the record unhashable -- and both fields are
+    # derived from bytes the thumbprint already identifies.
+    certificate: x509.Certificate | None = field(
+        default=None, repr=False, compare=False
+    )
+    info: CertInfo | None = field(default=None, repr=False, compare=False)
 
 
-def select_macos_certificate(
+def select_macos_certificate(  # pylint: disable=too-many-arguments
     candidates: list[MacCert],
     *,
     name: str | None = None,
     thumbprint: str | None = None,
     predicate: MacPredicate | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
 ) -> MacCert:
     """Choose a single certificate from *candidates*.
 
-    Selectors are applied in order of specificity: an exact ``thumbprint``
-    (SHA-1; colons, spaces, and case are ignored), then a ``predicate``
-    callable, then a case-insensitive ``name`` substring matched against the
-    subject common name and the keychain label. With no selector, all
-    candidates qualify (handy when the keychain holds exactly one identity).
+    Every selector given must match: an exact ``thumbprint`` (SHA-1; colons,
+    spaces, and case are ignored), a ``predicate`` callable, a case-insensitive
+    ``name`` substring matched against the subject common name and the keychain
+    label, and the ``key_usage`` / ``extended_key_usage`` the certificate must
+    assert -- which is how the two halves of a dual key pair in one keychain
+    are told apart. With no selector, all candidates qualify (handy when the
+    keychain holds exactly one identity).
 
     Raises :class:`CertificateNotFoundError` if nothing matches and
     :class:`AmbiguousCertificateError` if more than one does.
@@ -86,6 +105,8 @@ def select_macos_certificate(
         thumbprint=thumbprint,
         predicate=predicate,
         aliases=lambda c: (c.subject_cn, c.label),
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
     )
 
 
@@ -110,13 +131,20 @@ def list_macos_certificates() -> list[MacCert]:
         _free_identities(candidates)
 
 
-def load_macos_pkcs12(
+def load_macos_pkcs12(  # pylint: disable=too-many-arguments
     *,
     name: str | None = None,
     thumbprint: str | None = None,
     predicate: MacPredicate | None = None,
-) -> tuple[bytes, bytes]:
-    """Export the matching keychain identity to ``(pkcs12_bytes, password)``."""
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
+) -> tuple[bytes, bytes, str]:
+    """Export the matching keychain identity.
+
+    Returns ``(pkcs12_bytes, password, thumbprint)``; the thumbprint identifies
+    the chosen certificate inside the export, so the caller can pin it when
+    parsing rather than trusting that the blob holds exactly one identity.
+    """
     if sys.platform != "darwin":
         raise UnsupportedPlatformError(
             "the macOS keychain is only available on macOS"
@@ -125,9 +153,16 @@ def load_macos_pkcs12(
     keep: MacCert | None = None
     try:
         keep = select_macos_certificate(
-            candidates, name=name, thumbprint=thumbprint, predicate=predicate
+            candidates,
+            name=name,
+            thumbprint=thumbprint,
+            predicate=predicate,
+            key_usage=key_usage,
+            extended_key_usage=extended_key_usage,
         )
-        return _export_identity(keep)
+        chosen = keep.thumbprint
+        pfx, password = _export_identity(keep)
+        return pfx, password, chosen
     finally:
         # Every enumerated identity was retained so it outlives the query
         # result; release the ones we are not exporting (_export_identity
@@ -334,7 +369,7 @@ def _enumerate_identities() -> list[MacCert]:  # pragma: no cover
             handle = cf.CFRetain(identity)
             try:
                 label = _cfstr(cf, cf.CFDictionaryGetValue(attrs, kSecAttrLabel))
-                subject_cn, thumbprint = _certificate_details(sec, cf, identity)
+                certificate, info = _certificate_details(sec, cf, identity)
             except CertificateLoadError:
                 # Real keychains hold identities we cannot read (smartcard or
                 # Secure Enclave entries, malformed legacy certs). One of them
@@ -343,10 +378,12 @@ def _enumerate_identities() -> list[MacCert]:  # pragma: no cover
                 continue
             results.append(
                 MacCert(
-                    subject_cn=subject_cn,
+                    subject_cn=info.common_name,
                     label=label,
-                    thumbprint=thumbprint,
+                    thumbprint=info.fingerprint_sha1,
                     handle=handle,
+                    certificate=certificate,
+                    info=info,
                 )
             )
     finally:
@@ -356,12 +393,13 @@ def _enumerate_identities() -> list[MacCert]:  # pragma: no cover
 
 def _certificate_details(
     sec: Any, cf: Any, identity: Any
-) -> tuple[str | None, str]:  # pragma: no cover
-    """The subject CN and SHA-1 thumbprint of an identity's certificate.
+) -> tuple[x509.Certificate, CertInfo]:  # pragma: no cover
+    """An identity's certificate and its summary.
 
     The certificate DER is parsed with ``cryptography`` rather than more
     Security-framework calls -- it is already a dependency and spares the
-    CFString plumbing the Windows module needs for names.
+    CFString plumbing the Windows module needs for names. Parsing it once here
+    yields the subject, thumbprint, *and* the key usages selection needs.
     """
     import ctypes
 
@@ -376,8 +414,8 @@ def _certificate_details(
         der = _consume_cfdata(cf, sec.SecCertificateCopyData(cert_ref))
     finally:
         cf.CFRelease(cert_ref)
-    info = cert_info(der)
-    return info.common_name, info.fingerprint_sha1
+    certificate = _load_certificate(der)
+    return certificate, certificate_info(certificate)
 
 
 def _export_identity(cert: MacCert) -> tuple[bytes, bytes]:  # pragma: no cover

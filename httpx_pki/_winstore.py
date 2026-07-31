@@ -18,42 +18,70 @@ from __future__ import annotations
 import secrets
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from cryptography import x509
+
 from ._exceptions import CertificateLoadError, UnsupportedPlatformError
-from ._select import select_certificate
+from ._material import CertInfo, _load_certificate, certificate_info
+from ._select import UsageSelector, _CertDetails, select_certificate
 
 Predicate = Callable[["WinCert"], bool]
 
+# The crypt32 errors that mean "this key may not leave the store", as opposed to
+# a genuine export failure: NTE_BAD_KEY, NTE_BAD_FLAGS, NTE_BAD_KEY_STATE (the
+# usual one for a key imported without the exportable flag), and
+# NTE_NOT_SUPPORTED (its CNG counterpart).
+_NON_EXPORTABLE_ERRORS = frozenset(
+    {0x80090003, 0x80090009, 0x8009000B, 0x80090029}
+)
+
 
 @dataclass(frozen=True)
-class WinCert:
+class WinCert(_CertDetails):
     """A certificate discovered in the Windows store.
 
     ``handle`` is the opaque ``PCCERT_CONTEXT`` used to export the key; it is
     ``None`` for the synthetic candidates used in tests.
+
+    ``certificate`` and ``info`` carry the parsed certificate and its summary,
+    which is what makes ``key_usage`` / ``extended_key_usage`` selection (and
+    predicates over validity) possible. Both are ``None`` when the certificate
+    could not be read -- see :func:`_enumerate_store` -- in which case the
+    record still selects by name and thumbprint exactly as before.
     """
 
     subject_cn: str | None
     friendly_name: str | None
     thumbprint: str
     handle: Any = None
+    # compare=False keeps these out of __eq__/__hash__: CertInfo holds lists,
+    # so including it would make the record unhashable -- and both fields are
+    # derived from bytes the thumbprint already identifies.
+    certificate: x509.Certificate | None = field(
+        default=None, repr=False, compare=False
+    )
+    info: CertInfo | None = field(default=None, repr=False, compare=False)
 
 
-def select_windows_certificate(
+def select_windows_certificate(  # pylint: disable=too-many-arguments
     candidates: list[WinCert],
     *,
     name: str | None = None,
     thumbprint: str | None = None,
     predicate: Predicate | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
 ) -> WinCert:
     """Choose a single certificate from *candidates*.
 
-    Selectors are applied in order of specificity: an exact ``thumbprint``, then
-    a ``predicate`` callable, then a case-insensitive ``name`` substring matched
-    against the subject common name and the Windows friendly name. With no
-    selector, all candidates qualify (handy when the store holds exactly one).
+    Every selector given must match: an exact ``thumbprint``, a ``predicate``
+    callable, a case-insensitive ``name`` substring matched against the subject
+    common name and the Windows friendly name, and the ``key_usage`` /
+    ``extended_key_usage`` the certificate must assert -- which is how the two
+    halves of a dual key pair in one store are told apart. With no selector,
+    all candidates qualify (handy when the store holds exactly one).
 
     Raises :class:`CertificateNotFoundError` if nothing matches and
     :class:`AmbiguousCertificateError` if more than one does.
@@ -64,6 +92,8 @@ def select_windows_certificate(
         thumbprint=thumbprint,
         predicate=predicate,
         aliases=lambda c: (c.subject_cn, c.friendly_name),
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
     )
 
 
@@ -91,15 +121,22 @@ def list_windows_certificates(
         _free_contexts(candidates)
 
 
-def load_windows_pkcs12(
+def load_windows_pkcs12(  # pylint: disable=too-many-arguments
     *,
     name: str | None = None,
     thumbprint: str | None = None,
     predicate: Predicate | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
     store: str = "MY",
     location: str = "CurrentUser",
-) -> tuple[bytes, bytes]:
-    """Export the matching store certificate to ``(pkcs12_bytes, password)``."""
+) -> tuple[bytes, bytes, str]:
+    """Export the matching store certificate.
+
+    Returns ``(pkcs12_bytes, password, thumbprint)``; the thumbprint identifies
+    the chosen certificate inside the export, so the caller can pin it when
+    parsing rather than trusting that the blob holds exactly one identity.
+    """
     if sys.platform != "win32":
         raise UnsupportedPlatformError(
             "the Windows certificate store is only available on Windows"
@@ -108,9 +145,16 @@ def load_windows_pkcs12(
     keep: WinCert | None = None
     try:
         keep = select_windows_certificate(
-            candidates, name=name, thumbprint=thumbprint, predicate=predicate
+            candidates,
+            name=name,
+            thumbprint=thumbprint,
+            predicate=predicate,
+            key_usage=key_usage,
+            extended_key_usage=extended_key_usage,
         )
-        return _export_pfx(keep)
+        chosen = keep.thumbprint
+        pfx, password = _export_pfx(keep)
+        return pfx, password, chosen
     finally:
         # _enumerate_store duplicates every context so the handles outlive the
         # enumeration cursor; free the ones we are not exporting (_export_pfx
@@ -189,6 +233,7 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
         )
 
     import ctypes
+    from ctypes import wintypes
 
     crypt32 = _load_crypt32()
 
@@ -220,8 +265,20 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
     if not h_store:
         raise CertificateLoadError(
             f"could not open certificate store {store!r}: "
-            f"error {ctypes.get_last_error()}"
+            f"error {ctypes.get_last_error() & 0xFFFFFFFF:#010x}"
         )
+
+    # PCCERT_CONTEXT points at this; pbCertEncoded/cbCertEncoded are the DER we
+    # need for the key usages. Declared once per enumeration rather than per
+    # certificate. (wincrypt.h: CERT_CONTEXT.)
+    class CERT_CONTEXT(ctypes.Structure):  # pylint: disable=missing-class-docstring,too-few-public-methods
+        _fields_ = [
+            ("dwCertEncodingType", wintypes.DWORD),
+            ("pbCertEncoded", ctypes.POINTER(ctypes.c_ubyte)),
+            ("cbCertEncoded", wintypes.DWORD),
+            ("pCertInfo", ctypes.c_void_p),
+            ("hCertStore", ctypes.c_void_p),
+        ]
 
     results: list[WinCert] = []
     try:
@@ -230,6 +287,10 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
             # Duplicate so the context survives past the enumeration cursor
             # (the next enum call frees the one it just returned).
             dup = crypt32.CertDuplicateCertificateContext(cert_ctx)
+            thumbprint = _thumbprint(crypt32, cert_ctx, CERT_SHA1_HASH_PROP_ID)
+            certificate, info = _certificate_details(
+                cert_ctx, CERT_CONTEXT, thumbprint
+            )
             results.append(
                 WinCert(
                     subject_cn=_name_string(
@@ -238,16 +299,50 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
                     friendly_name=_friendly_name(
                         crypt32, cert_ctx, CERT_FRIENDLY_NAME_PROP_ID
                     ),
-                    thumbprint=_thumbprint(
-                        crypt32, cert_ctx, CERT_SHA1_HASH_PROP_ID
-                    ),
+                    thumbprint=thumbprint,
                     handle=dup,
+                    certificate=certificate,
+                    info=info,
                 )
             )
             cert_ctx = crypt32.CertEnumCertificatesInStore(h_store, cert_ctx)
     finally:
         crypt32.CertCloseStore(h_store, 0)
     return results
+
+
+def _certificate_details(
+    cert_ctx: Any, context_type: Any, thumbprint: str
+) -> tuple[x509.Certificate | None, CertInfo | None]:  # pragma: no cover
+    """The parsed certificate behind a context, or ``(None, None)``.
+
+    Windows hands out the DER inside the ``CERT_CONTEXT`` structure rather than
+    through a getter, so reading it means trusting a struct layout -- and a
+    wrong offset yields plausible-looking garbage rather than an error. The
+    result is therefore checked against the SHA-1 thumbprint Windows reported
+    through an entirely separate API (``CertGetCertificateContextProperty``):
+    if the bytes we parsed are not the certificate Windows says this is, we
+    misread memory.
+
+    A failure is not fatal. The record keeps working for ``name`` and
+    ``thumbprint`` selection exactly as it did before usages were available;
+    only usage-based selection goes missing, and the candidate listing in a
+    selection error shows no ``key_usage=`` for it, which is the visible clue.
+    """
+    import ctypes
+
+    try:
+        context = ctypes.cast(cert_ctx, ctypes.POINTER(context_type)).contents
+        if not context.pbCertEncoded or not context.cbCertEncoded:
+            return None, None
+        der = ctypes.string_at(context.pbCertEncoded, context.cbCertEncoded)
+        certificate = _load_certificate(der)
+        info = certificate_info(certificate)
+    except (CertificateLoadError, ValueError, OSError):
+        return None, None
+    if thumbprint and info.fingerprint_sha1 != thumbprint:
+        return None, None
+    return certificate, info
 
 
 def _name_string(
@@ -319,7 +414,6 @@ def _export_pfx(cert: WinCert) -> tuple[bytes, bytes]:  # pragma: no cover
     CERT_STORE_ADD_ALWAYS = 4
     EXPORT_PRIVATE_KEYS = 0x0004
     REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY = 0x0002
-    NON_EXPORTABLE_ERRORS = {0x80090003, 0x8009000B, 0x80090009}
 
     class CRYPT_DATA_BLOB(ctypes.Structure):
         _fields_ = [
@@ -349,12 +443,12 @@ def _export_pfx(cert: WinCert) -> tuple[bytes, bytes]:  # pragma: no cover
             )
 
         if not _export():
-            _raise_export_error(ctypes.get_last_error(), NON_EXPORTABLE_ERRORS)
+            _raise_export_error(ctypes.get_last_error())
 
         buf = (ctypes.c_byte * blob.cbData)()
         blob.pbData = ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte))
         if not _export():
-            _raise_export_error(ctypes.get_last_error(), NON_EXPORTABLE_ERRORS)
+            _raise_export_error(ctypes.get_last_error())
 
         pfx_bytes = ctypes.string_at(blob.pbData, blob.cbData)
     finally:
@@ -365,12 +459,24 @@ def _export_pfx(cert: WinCert) -> tuple[bytes, bytes]:  # pragma: no cover
     return pfx_bytes, password.encode("utf-8")
 
 
-def _raise_export_error(
-    code: int, non_exportable: set[int]
-) -> None:  # pragma: no cover
-    if code in non_exportable:
+def _raise_export_error(code: int) -> None:
+    """Turn a failed PFX export into an error that says what to do about it.
+
+    Not marked platform-only: the mapping is pure, and it is the one piece of
+    the export path that can be tested off Windows.
+    """
+    # ctypes.get_last_error() hands back a *signed* int, so every NTE_* HRESULT
+    # (high bit set) arrives negative -- 0x8009000B reads as -0x7ff6fff5 and
+    # matches nothing. Normalize before comparing or formatting.
+    code &= 0xFFFFFFFF
+    if code in _NON_EXPORTABLE_ERRORS:
         raise CertificateLoadError(
-            "the certificate's private key is not exportable "
-            f"(Windows error {code:#010x})"
+            "the certificate's private key is not exportable, so Windows "
+            f"refused to export it (error {code:#010x}). A key can only be "
+            "exported if it was marked exportable when it was imported -- "
+            "re-import with `Import-PfxCertificate -Exportable`, or tick "
+            '"Mark this key as exportable" in the certificate import wizard. '
+            "A key held in a TPM or a smart card cannot be exported at all; "
+            "use from_key_pair with a certificate and key file instead."
         )
     raise CertificateLoadError(f"PFX export failed (Windows error {code:#010x})")

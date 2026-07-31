@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import http.server
 import ipaddress
 import ssl
@@ -16,6 +17,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
+
+from httpx_pki.testing import CertBundle, make_client_cert, make_pkcs12
 
 P12_PASSWORD = "secret"
 CLIENT_CN = "test-client"
@@ -163,6 +166,45 @@ def client_p12_file(
 
 
 @pytest.fixture(scope="session")
+def ca_bundle(ca: Signed) -> CertBundle:
+    """The test CA as a :class:`CertBundle`, for the testing-module helpers."""
+    return CertBundle(key=ca.key, cert=ca.cert)
+
+
+@pytest.fixture(scope="session")
+def dual_identities(ca_bundle: CertBundle) -> tuple[CertBundle, CertBundle]:
+    """A dual key pair: same subject, one signing and one encryption identity.
+
+    What a CA that escrows the encryption key issues -- the two certificates
+    differ only in their key usage (and, here, their extended key usage), which
+    is exactly the case identity selection exists for.
+    """
+    signing = make_client_cert(
+        CLIENT_CN,
+        ca=ca_bundle,
+        key_usage=["digital_signature"],
+        extended_key_usage=["client_auth"],
+    )
+    encryption = make_client_cert(
+        CLIENT_CN,
+        ca=ca_bundle,
+        key_usage=["key_encipherment"],
+        extended_key_usage=["email_protection"],
+    )
+    return signing, encryption
+
+
+@pytest.fixture(scope="session")
+def dual_p12(dual_identities: tuple[CertBundle, CertBundle]) -> bytes:
+    """The dual key pair as one password-protected PKCS#12 bundle."""
+    signing, encryption = dual_identities
+    return make_pkcs12(
+        [(signing, "Signature"), (encryption, "Encryption")],
+        password=P12_PASSWORD,
+    )
+
+
+@pytest.fixture(scope="session")
 def server_cert(ca: Signed) -> Signed:
     sans = [
         x509.DNSName("localhost"),
@@ -194,8 +236,14 @@ def mtls_server(
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
+            # Report which client certificate the server actually saw, so a
+            # test can prove the selected identity is the one presented.
+            peer = self.connection.getpeercert(binary_form=True) or b""
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
+            self.send_header(
+                "X-Client-Fingerprint", hashlib.sha256(peer).hexdigest().upper()
+            )
             self.end_headers()
             self.wfile.write(b"mtls-ok")
 

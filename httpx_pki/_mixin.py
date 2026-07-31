@@ -45,6 +45,8 @@ from ._material import (
     parse_pkcs12,
     read_source,
 )
+from ._pkcs12 import IdentitySelector, material_from_store_export
+from ._select import UsageSelector
 from ._source import (
     SourceRef,
     WatchSignature,
@@ -116,18 +118,26 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         password: Password = None,
         *,
         verify: VerifyTypes = True,
+        identity: IdentitySelector | None = None,
+        key_usage: UsageSelector | None = None,
+        extended_key_usage: UsageSelector | None = None,
         warn_if_expires_within: datetime.timedelta | None = None,
         auto_reload: bool | datetime.timedelta = False,
         strict_validity: bool = False,
         **kwargs: Any,
     ) -> None:
         encoded = encode_password(password)
-        material = load_material(read_source(cert), encoded)
+        selectors: dict[str, Any] = {
+            "identity": identity,
+            "key_usage": key_usage,
+            "extended_key_usage": extended_key_usage,
+        }
+        material = load_material(read_source(cert), encoded, **selectors)
         self._apply_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("auto", {"cert": cert}, encoded),
+            source=SourceRef("auto", {"cert": cert, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -268,6 +278,9 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         password: Password = None,
         *,
         verify: VerifyTypes = True,
+        identity: IdentitySelector | None = None,
+        key_usage: UsageSelector | None = None,
+        extended_key_usage: UsageSelector | None = None,
         warn_if_expires_within: datetime.timedelta | None = None,
         auto_reload: bool | datetime.timedelta = False,
         strict_validity: bool = False,
@@ -275,16 +288,37 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     ) -> _S:
         """Build a session from a PKCS#12 bundle (path or bytes).
 
+        A bundle holding more than one identity -- a dual key pair, where the
+        CA issued separate signing and encryption certificates -- requires a
+        selector saying which to present, or
+        :class:`~httpx_pki.AmbiguousCertificateError` is raised rather than an
+        arbitrary one being picked. ``identity`` takes the file position, a
+        case-insensitive substring of the friendly name / common name / subject,
+        an exact SHA-1 or SHA-256 fingerprint, or a predicate over
+        :class:`~httpx_pki.P12Identity`; ``key_usage`` and
+        ``extended_key_usage`` require the named usages, which is usually what
+        separates the two::
+
+            PKIClient.from_pkcs12(
+                "corp.p12", password=pw, key_usage="digital_signature"
+            )
+
+        See :func:`~httpx_pki.list_pkcs12_identities` for what a file holds.
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
         """
         encoded = encode_password(password)
-        material = parse_pkcs12(read_source(cert), encoded)
+        selectors: dict[str, Any] = {
+            "identity": identity,
+            "key_usage": key_usage,
+            "extended_key_usage": extended_key_usage,
+        }
+        material = parse_pkcs12(read_source(cert), encoded, **selectors)
         return cls._from_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("pkcs12", {"cert": cert}, encoded),
+            source=SourceRef("pkcs12", {"cert": cert, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -368,6 +402,8 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         *,
         thumbprint: str | None = None,
         predicate: MacPredicate | None = None,
+        key_usage: UsageSelector | None = None,
+        extended_key_usage: UsageSelector | None = None,
         verify: VerifyTypes = True,
         warn_if_expires_within: datetime.timedelta | None = None,
         strict_validity: bool = False,
@@ -377,14 +413,22 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         macOS only. Selects the identity from the default keychain search list
         by ``name`` (case-insensitive substring of the subject common name or
-        keychain label), or unambiguously by ``thumbprint`` or a ``predicate``
-        callable. The private key must be exportable, and the keychain must
-        not require an interactive consent prompt (provision with
-        ``security import ... -A`` or "Always Allow" for unattended use).
-        :meth:`reload` re-exports from the keychain with the same selector
-        (there is no file to watch, so ``auto_reload`` is not available).
-        *warn_if_expires_within* warns about a certificate that expires inside
-        that window (see :meth:`check_validity`).
+        keychain label), ``thumbprint``, a ``predicate`` callable, or the
+        ``key_usage`` / ``extended_key_usage`` the certificate must assert;
+        every selector given must match. A keychain holding both halves of a
+        dual key pair needs the usage to choose between them::
+
+            AsyncPKIClient.from_macos_keychain(
+                "corp-user", key_usage="digital_signature"
+            )
+
+        The private key must be exportable, and the keychain must not require
+        an interactive consent prompt (provision with ``security import ... -A``
+        or "Always Allow" for unattended use). :meth:`reload` re-exports from
+        the keychain with the same selector (there is no file to watch, so
+        ``auto_reload`` is not available). *warn_if_expires_within* warns about
+        a certificate that expires inside that window (see
+        :meth:`check_validity`).
 
         Raises :class:`~httpx_pki.UnsupportedPlatformError` off macOS,
         :class:`~httpx_pki.CertificateNotFoundError` if nothing matches, and
@@ -396,10 +440,12 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "name": name,
             "thumbprint": thumbprint,
             "predicate": predicate,
+            "key_usage": key_usage,
+            "extended_key_usage": extended_key_usage,
         }
-        pfx, password = load_macos_pkcs12(**selector)
+        pfx, password, chosen = load_macos_pkcs12(**selector)
         return cls._from_material(
-            parse_pkcs12(pfx, password),
+            material_from_store_export(pfx, password, chosen),
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
             source=SourceRef("macos_keychain", selector),
@@ -408,12 +454,14 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         )
 
     @classmethod
-    def from_windows_cert_store(  # pylint: disable=too-many-arguments
+    def from_windows_cert_store(  # pylint: disable=too-many-arguments,too-many-locals
         cls: type[_S],
         name: str | None = None,
         *,
         thumbprint: str | None = None,
         predicate: Predicate | None = None,
+        key_usage: UsageSelector | None = None,
+        extended_key_usage: UsageSelector | None = None,
         store: str = "MY",
         location: str = "CurrentUser",
         verify: VerifyTypes = True,
@@ -424,13 +472,21 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         """Build a session from an exportable certificate in the Windows store.
 
         Windows only. Selects the certificate by ``name`` (case-insensitive
-        substring of the subject common name or friendly name), or unambiguously
-        by ``thumbprint`` or a ``predicate`` callable. The matching certificate's
-        private key must be marked exportable. :meth:`reload` re-exports from
-        the store with the same selector (there is no file to watch, so
-        ``auto_reload`` is not available). *warn_if_expires_within* warns about
-        a certificate that expires inside that window (see
-        :meth:`check_validity`).
+        substring of the subject common name or friendly name), ``thumbprint``,
+        a ``predicate`` callable, or the ``key_usage`` / ``extended_key_usage``
+        the certificate must assert; every selector given must match. A store
+        holding both halves of a dual key pair -- what Active Directory key
+        archival provisions -- needs the usage to choose between them::
+
+            PKIClient.from_windows_cert_store(
+                "corp-user", key_usage="digital_signature"
+            )
+
+        The matching certificate's private key must be marked exportable.
+        :meth:`reload` re-exports from the store with the same selector (there
+        is no file to watch, so ``auto_reload`` is not available).
+        *warn_if_expires_within* warns about a certificate that expires inside
+        that window (see :meth:`check_validity`).
 
         Raises :class:`~httpx_pki.UnsupportedPlatformError` off Windows,
         :class:`~httpx_pki.CertificateNotFoundError` if nothing matches, and
@@ -442,12 +498,14 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "name": name,
             "thumbprint": thumbprint,
             "predicate": predicate,
+            "key_usage": key_usage,
+            "extended_key_usage": extended_key_usage,
             "store": store,
             "location": location,
         }
-        pfx, password = load_windows_pkcs12(**selector)
+        pfx, password, chosen = load_windows_pkcs12(**selector)
         return cls._from_material(
-            parse_pkcs12(pfx, password),
+            material_from_store_export(pfx, password, chosen),
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
             source=SourceRef("winstore", selector),

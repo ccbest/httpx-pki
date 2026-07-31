@@ -28,9 +28,10 @@ from ._material import (
     _pkcs7_cadata,
     encode_password,
     load_material,
-    parse_pkcs12,
     read_source,
 )
+from ._pkcs12 import IdentitySelector, material_from_store_export
+from ._select import UsageSelector
 from ._winstore import Predicate
 
 # Accepted values for ``verify``: ``True`` (default CA bundle), ``False``
@@ -40,11 +41,14 @@ from ._winstore import Predicate
 VerifyTypes = bool | str | Path | ssl.SSLContext
 
 
-def build_ssl_context(
+def build_ssl_context(  # pylint: disable=too-many-arguments
     cert: CertSource,
     password: Password = None,
     *,
     verify: VerifyTypes = True,
+    identity: IdentitySelector | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
 ) -> ssl.SSLContext:
     """Build a client-certificate ``ssl.SSLContext`` from a cert source.
 
@@ -58,8 +62,18 @@ def build_ssl_context(
 
         ctx = build_ssl_context("client.p12", password="secret")
         client = httpx.Client(verify=ctx)
+
+    ``identity`` / ``key_usage`` / ``extended_key_usage`` choose between the
+    identities of a multi-identity PKCS#12 bundle, exactly as on
+    :meth:`~httpx_pki.PKIClient.from_pkcs12`.
     """
-    material = load_material(read_source(cert), encode_password(password))
+    material = load_material(
+        read_source(cert),
+        encode_password(password),
+        identity=identity,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
+    )
     return _context_from_material(material, verify)
 
 
@@ -68,6 +82,8 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     *,
     thumbprint: str | None = None,
     predicate: Predicate | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
     store: str = "MY",
     location: str = "CurrentUser",
     verify: VerifyTypes = True,
@@ -77,10 +93,11 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     The :func:`build_ssl_context` counterpart of
     :meth:`~httpx_pki.PKIClient.from_windows_cert_store`: it selects an
     exportable certificate from the store -- by ``name`` (case-insensitive
-    substring of the subject common name or friendly name), ``thumbprint``, or a
-    ``predicate`` callable -- and returns the ``ssl.SSLContext`` presenting it,
-    with server trust configured by *verify* exactly like httpx (plus the
-    literal ``"system"`` for the OS trust store).
+    substring of the subject common name or friendly name), ``thumbprint``, a
+    ``predicate`` callable, or the ``key_usage`` / ``extended_key_usage`` it
+    must assert -- and returns the ``ssl.SSLContext`` presenting it, with
+    server trust configured by *verify* exactly like httpx (plus the literal
+    ``"system"`` for the OS trust store).
 
     Use it to mount a store certificate on a transport or a routing layer
     without building a whole :class:`~httpx_pki.PKIClient` just to read its
@@ -94,21 +111,27 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     """
     from ._winstore import load_windows_pkcs12
 
-    pfx, password = load_windows_pkcs12(
+    pfx, password, chosen = load_windows_pkcs12(
         name=name,
         thumbprint=thumbprint,
         predicate=predicate,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
         store=store,
         location=location,
     )
-    return _context_from_material(parse_pkcs12(pfx, password), verify)
+    return _context_from_material(
+        material_from_store_export(pfx, password, chosen), verify
+    )
 
 
-def build_macos_ssl_context(
+def build_macos_ssl_context(  # pylint: disable=too-many-arguments
     name: str | None = None,
     *,
     thumbprint: str | None = None,
     predicate: MacPredicate | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
     verify: VerifyTypes = True,
 ) -> ssl.SSLContext:
     """Build a client-certificate ``ssl.SSLContext`` from the macOS keychain.
@@ -117,7 +140,8 @@ def build_macos_ssl_context(
     :meth:`~httpx_pki.PKIClient.from_macos_keychain`: it selects an exportable
     identity from the default keychain search list -- by ``name``
     (case-insensitive substring of the subject common name or keychain label),
-    ``thumbprint``, or a ``predicate`` callable -- and returns the
+    ``thumbprint``, a ``predicate`` callable, or the ``key_usage`` /
+    ``extended_key_usage`` it must assert -- and returns the
     ``ssl.SSLContext`` presenting it, with server trust configured by *verify*
     exactly like httpx (plus the literal ``"system"`` for the OS trust store).
 
@@ -129,10 +153,16 @@ def build_macos_ssl_context(
     """
     from ._keychain import load_macos_pkcs12
 
-    pfx, password = load_macos_pkcs12(
-        name=name, thumbprint=thumbprint, predicate=predicate
+    pfx, password, chosen = load_macos_pkcs12(
+        name=name,
+        thumbprint=thumbprint,
+        predicate=predicate,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
     )
-    return _context_from_material(parse_pkcs12(pfx, password), verify)
+    return _context_from_material(
+        material_from_store_export(pfx, password, chosen), verify
+    )
 
 
 def _context_from_material(

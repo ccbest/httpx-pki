@@ -6,8 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from httpx_pki import AsyncPKIClient, CertificateLoadError, PKIClient
-from httpx_pki.testing import make_ca, make_client_cert
+from httpx_pki import (
+    AmbiguousCertificateError,
+    AsyncPKIClient,
+    CertificateLoadError,
+    PKIClient,
+)
+from httpx_pki.testing import make_ca, make_client_cert, make_pkcs12
 
 
 def test_from_env_pkcs12(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,3 +144,69 @@ async def test_async_from_env(
     monkeypatch.setenv("HTTPX_PKI_CERT", str(p12))
     async with AsyncPKIClient.from_env() as session:
         assert session.cn == "async-c"
+
+
+def _dual_env_p12(tmp_path: Path) -> Path:
+    ca = make_ca()
+    signing = make_client_cert(
+        "env-dual",
+        ca=ca,
+        key_usage=["digital_signature"],
+        extended_key_usage=["client_auth"],
+    )
+    encryption = make_client_cert(
+        "env-dual",
+        ca=ca,
+        key_usage=["key_encipherment"],
+        extended_key_usage=["email_protection"],
+    )
+    path = tmp_path / "dual.p12"
+    path.write_bytes(
+        make_pkcs12(
+            [(signing, "Signature"), (encryption, "Encryption")], password="pw"
+        )
+    )
+    return path
+
+
+def test_from_env_requires_an_identity_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(_dual_env_p12(tmp_path)))
+    monkeypatch.setenv("HTTPX_PKI_PASSWORD", "pw")
+    with pytest.raises(AmbiguousCertificateError):
+        PKIClient.from_env()
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("HTTPX_PKI_IDENTITY", "Signature"),
+        ("HTTPX_PKI_IDENTITY", "0"),
+        ("HTTPX_PKI_KEY_USAGE", "digital_signature"),
+        ("HTTPX_PKI_EXT_KEY_USAGE", "client_auth"),
+    ],
+)
+def test_from_env_identity_selectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+) -> None:
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(_dual_env_p12(tmp_path)))
+    monkeypatch.setenv("HTTPX_PKI_PASSWORD", "pw")
+    monkeypatch.setenv(variable, value)
+    with PKIClient.from_env() as session:
+        assert session.cert_info().key_usage == frozenset({"digital_signature"})
+
+
+def test_from_env_identity_selector_conflicts_with_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = make_client_cert("kp", ca=make_ca())
+    cert = tmp_path / "client.crt"
+    key = tmp_path / "client.key"
+    cert.write_bytes(bundle.cert_pem)
+    key.write_bytes(bundle.key_pem)
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(cert))
+    monkeypatch.setenv("HTTPX_PKI_KEY", str(key))
+    monkeypatch.setenv("HTTPX_PKI_KEY_USAGE", "digital_signature")
+    with pytest.raises(CertificateLoadError, match="separate private key"):
+        PKIClient.from_env()

@@ -22,6 +22,7 @@ from ._keychain import (
     select_macos_certificate,
 )
 from ._material import CertInfo, Material, cert_info
+from ._pkcs12 import P12Identity, list_pkcs12_identities
 from ._ssl import build_macos_ssl_context, build_ssl_context, build_windows_ssl_context
 from ._winstore import (
     WinCert,
@@ -35,6 +36,7 @@ __all__ = [
     "build_ssl_context",
     "build_macos_ssl_context",
     "build_windows_ssl_context",
+    "list_pkcs12_identities",
     "list_macos_certificates",
     "select_macos_certificate",
     "list_windows_certificates",
@@ -52,9 +54,10 @@ __all__ = [
     "PicklingWarning",
     "CertInfo",
     "Material",
+    "P12Identity",
     "cert_info",
     "WinCert",
     "MacCert",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

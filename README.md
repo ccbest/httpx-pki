@@ -45,7 +45,7 @@ extension never matters:
 
 | Input | Constructor | Notes |
 | --- | --- | --- |
-| **PKCS#12** (`.p12`, `.pfx`, binary) | `PKIClient(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob |
+| **PKCS#12** (`.p12`, `.pfx`, binary) | `PKIClient(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob; may hold [several identities](#when-one-p12-holds-several-identities) |
 | **PEM bundle** (key + cert(s) in one file) | `PKIClient(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys |
 | **Separate cert + key** (PEM *or* DER) | `from_key_pair(...)` | optional `chain=` intermediates |
 | **PKCS#7 / `.p7b`** (certs only, DER or PEM) | `certificate=`/`chain=` in `from_key_pair`, or a `verify=` CA bundle | holds no private key — pairs with a separate key |
@@ -70,6 +70,109 @@ PKIClient("client.p12", password="secret")          # path
 PKIClient(Path("client.pfx"), password="secret")     # pathlib.Path
 PKIClient(p12_bytes, password=b"secret")             # bytes; password may be bytes
 ```
+
+### When one `.p12` holds several identities
+
+A bundle can carry more than one **identity** — a private key with its
+certificate. Two identities for the same subject is routine wherever a CA
+archives the key that *decrypts* data, so encrypted mail and files survive a
+lost laptop, but never the key that *signs*, which would defeat
+non-repudiation: Entrust dual key pairs, PIV/CAC, S/MIME key archival, national
+eID schemes. The two certificates differ in their key usage, and that is
+usually all that tells them apart.
+
+Which bits exactly depends on the algorithm and the scheme:
+
+| Half | Typical key usage |
+| --- | --- |
+| encryption | `key_encipherment` (RSA) or `key_agreement` (ECDH) |
+| signing | `digital_signature`, and/or `content_commitment` — the bit most CAs still call *nonRepudiation*, which `key_usage=` accepts as a spelling |
+
+**For mTLS you almost always want the signing half.** TLS 1.3, and every ECDHE
+suite before it, has the client sign the handshake; an encryption-only
+certificate cannot complete one.
+
+Some schemes split three ways rather than two — a PIV card carries
+authentication, signature, and key-management certificates, and the first two
+both assert `digital_signature`. There the extended key usage is the
+discriminator (`client_auth` versus `email_protection`), which
+`extended_key_usage=` selects on.
+
+Loading such a file without saying which one you want raises rather than
+presenting whichever the file happens to store first:
+
+```python
+>>> PKIClient("corp.p12", password="secret")
+AmbiguousCertificateError: this PKCS#12 data holds 2 identities:
+  [0] corp-user (Signature) key_usage=digital_signature expires=2027-07-30 8F78A78195…
+  [1] corp-user (Encryption) key_usage=key_encipherment expires=2027-07-30 6E88063681…
+Pick one with identity= (index, name, or fingerprint), key_usage=, or extended_key_usage=.
+```
+
+See what a file holds with `list_pkcs12_identities` (it never returns the
+private keys):
+
+```python
+from httpx_pki import list_pkcs12_identities
+
+for identity in list_pkcs12_identities("corp.p12", password="secret"):
+    print(identity.index, identity.friendly_name,
+          sorted(identity.info.key_usage), identity.info.extended_key_usage)
+```
+
+Then select one. Every PKCS#12 entry point — `PKIClient(...)`,
+`from_pkcs12(...)`, `AsyncPKIClient`, and `build_ssl_context` — takes the same
+three selectors, and they intersect if you pass more than one:
+
+```python
+# by key usage: the usual discriminator for a dual key pair
+PKIClient("corp.p12", password="secret", key_usage="digital_signature")
+
+# by extended key usage, when both certs share their key-usage bits
+PKIClient("corp.p12", password="secret", extended_key_usage="client_auth")
+
+# by name: a case-insensitive substring of the friendly name, common name,
+# or full subject
+PKIClient("corp.p12", password="secret", identity="Signature")
+
+# by exact SHA-1 or SHA-256 fingerprint (colons and case are ignored)
+PKIClient("corp.p12", password="secret", identity="9F:86:D0:81…")
+
+# by file position, or by any predicate over the identity
+PKIClient("corp.p12", password="secret", identity=0)
+PKIClient(
+  "corp.p12", 
+  password="secret",
+  identity=lambda i: i.info.serial_number == 4242
+)
+```
+
+A selector that matches nothing raises `CertificateNotFoundError`; one that
+matches several raises `AmbiguousCertificateError`. Usage names are spelled as
+`CertInfo` reports them (`digital_signature`, `client_auth`), and `keyUsage`
+camelCase and dotted OIDs are accepted too.
+
+The same applies when a file carries a **renewed certificate next to the one it
+replaces** — two certificates over one key pair, which is what renewing rather
+than rekeying produces. Those are two identities as well, and since only the
+validity window separates them, a predicate is usually the way to pick:
+
+```python
+now = datetime.now(timezone.utc)
+PKIClient(
+  "corp.p12", 
+  password="secret", 
+  identity=lambda i: i.info.not_after > now
+)
+```
+
+The other identities' certificates are **not** presented as chain certificates
+— they are leaf certificates of their own, and a strict server can reject a
+chain carrying them. Only real chain certificates are sent.
+
+The selection is remembered: `reload()` and `auto_reload` re-select the same
+identity after a rotation, even if the new file lists the identities in a
+different order, and it survives pickling.
 
 ### From a PEM file (key + cert in one blob)
 
@@ -115,23 +218,42 @@ with PKIClient.from_windows_cert_store(name="ACME Client") as client:
 ```
 
 If several certificates match you'll get an `AmbiguousCertificateError` listing
-the candidates; narrow it with an exact thumbprint or a predicate:
+the candidates with their key usages and expiry; narrow it with any combination
+of selectors — **every one you pass must match**:
 
 ```python
 PKIClient.from_windows_cert_store(thumbprint="A1:B2:C3:...")
 PKIClient.from_windows_cert_store(predicate=lambda c: c.friendly_name == "prod")
 PKIClient.from_windows_cert_store(name="ACME", location="LocalMachine")
+
+# A dual key pair — what AD key archival provisions — puts both halves in the
+# store under one subject. The key usage is what separates them:
+PKIClient.from_windows_cert_store(name="ACME", key_usage="digital_signature")
+PKIClient.from_windows_cert_store(name="ACME", extended_key_usage="client_auth")
 ```
 
 To see what's in the store before selecting, `list_windows_certificates()`
-returns a `WinCert` (subject CN, friendly name, thumbprint) for each certificate
-— metadata only, no key is exported:
+returns a `WinCert` for each certificate — metadata only, no key is exported:
 
 ```python
 from httpx_pki import list_windows_certificates
 
 for c in list_windows_certificates():        # location="LocalMachine" for the machine store
-    print(c.friendly_name, c.subject_cn, c.thumbprint)
+    print(c.friendly_name, c.subject_cn, c.thumbprint, sorted(c.key_usage))
+```
+
+Each `WinCert` also carries the parsed `certificate` and its `info`
+(a [`CertInfo`](#inspecting-the-certificate)), so a predicate can select on
+anything a certificate holds — including skipping the expired copy a store
+tends to keep after a renewal:
+
+```python
+from datetime import datetime, timezone
+
+now = datetime.now(timezone.utc)
+PKIClient.from_windows_cert_store(
+    name="ACME", predicate=lambda c: c.info is not None and c.info.not_after > now
+)
 ```
 
 Notes:
@@ -158,15 +280,20 @@ with PKIClient.from_macos_keychain(name="ACME Client") as client:
 ```
 
 Selection works exactly like the Windows store — `AmbiguousCertificateError`
-lists the candidates; narrow with an exact thumbprint or a predicate:
+lists the candidates, and every selector you pass must match:
 
 ```python
 PKIClient.from_macos_keychain(thumbprint="A1:B2:C3:...")
 PKIClient.from_macos_keychain(predicate=lambda c: c.label == "prod")
+
+# Both halves of a dual key pair in one keychain, told apart by usage:
+PKIClient.from_macos_keychain(name="ACME", key_usage="digital_signature")
+PKIClient.from_macos_keychain(name="ACME", extended_key_usage="email_protection")
 ```
 
-`list_macos_certificates()` returns a `MacCert` (subject CN, keychain label,
-SHA-1 thumbprint) per identity — metadata only, no key is exported — and
+`list_macos_certificates()` returns a `MacCert` per identity — subject CN,
+keychain label, SHA-1 thumbprint, plus the parsed `certificate`, its `info`,
+and `key_usage` / `extended_key_usage`; metadata only, no key is exported.
 `build_macos_ssl_context(...)` is the session-less seam, mirroring
 `build_windows_ssl_context`.
 
@@ -202,6 +329,9 @@ with PKIClient.from_env() as client:        # reads HTTPX_PKI_* by default
 | `HTTPX_PKI_KEY` | path to a separate private key; switches to cert+key mode |
 | `HTTPX_PKI_CHAIN` | intermediates to present, in addition to any carried by `CERT` |
 | `HTTPX_PKI_CA` | CA bundle for **server** trust (`verify=`), or the literal `system` for the OS trust store |
+| `HTTPX_PKI_IDENTITY` | which identity to present when `CERT` holds several: a file position, a name substring, or a fingerprint |
+| `HTTPX_PKI_KEY_USAGE` | identity selector by key usage, comma-separated (e.g. `digital_signature`) |
+| `HTTPX_PKI_EXT_KEY_USAGE` | identity selector by extended key usage, comma-separated (e.g. `client_auth`) |
 
 Pass a different `prefix=` to namespace per service (`PKIClient.from_env("MYAPP_")`).
 
@@ -509,7 +639,29 @@ expired = make_client_cert("old", ca=ca, expired=True)  # for expiry tests
 
 Minted certificates carry the extensions a real CA would issue — a
 `digitalSignature`/`keyEncipherment` KeyUsage and a `clientAuth` ExtendedKeyUsage —
-so servers that enforce EKU accept them.
+so servers that enforce EKU accept them. Override either with `key_usage=` /
+`extended_key_usage=`.
+
+`make_pkcs12` writes several identities into one bundle, which nothing else can
+do — `cryptography` and the `openssl` command line both keep a single key — so
+you can test how your code handles a dual key pair:
+
+```python
+from httpx_pki.testing import make_ca, make_client_cert, make_pkcs12
+
+ca = make_ca()
+signing = make_client_cert("me", ca=ca, key_usage=["digital_signature"])
+encryption = make_client_cert("me", ca=ca, key_usage=["key_encipherment"])
+
+blob = make_pkcs12(
+    [(signing, "Signature"), (encryption, "Encryption")], password="secret"
+)
+```
+
+The bundle is laid out the way OpenSSL and Windows write one (certificates in a
+PBES2-encrypted block, each key individually shrouded, an HMAC over the whole
+file); pass `encrypt_certs=False`, `mac=False`, or an empty password for the
+plainer variants.
 
 ## ⚠️ Security note on pickling
 

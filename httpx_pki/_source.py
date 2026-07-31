@@ -26,6 +26,7 @@ from ._material import (
     parse_pkcs12,
     read_source,
 )
+from ._pkcs12 import material_from_store_export
 
 # One (mtime_ns, size) entry per watched path; None for a path that can't be
 # stat'ed (mid-rotation gap, deleted file). Any change in the tuple means the
@@ -47,6 +48,18 @@ class SourceRef:
     password: bytes | None = None
 
 
+def _selectors(args: dict[str, Any]) -> dict[str, Any]:
+    """The PKCS#12 identity selectors recorded on a ref.
+
+    ``.get`` rather than indexing: refs pickled before identity selection
+    existed carry only the certificate arguments, and must keep reloading.
+    """
+    return {
+        name: args.get(name)
+        for name in ("identity", "key_usage", "extended_key_usage")
+    }
+
+
 def resolve_source(  # pylint: disable=too-many-return-statements
     ref: SourceRef, password: bytes | None = None
 ) -> Material:
@@ -59,9 +72,9 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     pw = password if password is not None else ref.password
     args = ref.args
     if ref.kind == "auto":
-        return load_material(read_source(args["cert"]), pw)
+        return load_material(read_source(args["cert"]), pw, **_selectors(args))
     if ref.kind == "pkcs12":
-        return parse_pkcs12(read_source(args["cert"]), pw)
+        return parse_pkcs12(read_source(args["cert"]), pw, **_selectors(args))
     if ref.kind == "pem":
         return parse_pem_bundle(read_source(args["source"]), pw)
     if ref.kind == "key_pair":
@@ -76,13 +89,13 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     if ref.kind == "winstore":
         from ._winstore import load_windows_pkcs12
 
-        pfx, pfx_password = load_windows_pkcs12(**args)
-        return parse_pkcs12(pfx, pfx_password)
+        pfx, pfx_password, chosen = load_windows_pkcs12(**args)
+        return material_from_store_export(pfx, pfx_password, chosen)
     if ref.kind == "macos_keychain":
         from ._keychain import load_macos_pkcs12
 
-        pfx, pfx_password = load_macos_pkcs12(**args)
-        return parse_pkcs12(pfx, pfx_password)
+        pfx, pfx_password, chosen = load_macos_pkcs12(**args)
+        return material_from_store_export(pfx, pfx_password, chosen)
     raise ValueError(f"unknown source kind {ref.kind!r}")
 
 
