@@ -434,19 +434,101 @@ requires_winstore = pytest.mark.skipif(
 
 
 def _powershell(script: str, *, check: bool = True) -> str:
-    proc = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if check and proc.returncode != 0:
-        # Surface stderr: CalledProcessError alone shows only the argv, which
-        # makes CI failures undiagnosable.
+    """Run *script*, preferring PowerShell 7 and falling back to 5.1.
+
+    The scripts below use nothing but language primitives and .NET types. The
+    obvious spelling -- ``Import-PfxCertificate`` with a ``Cert:\\CurrentUser\\My``
+    path -- needs the PKI module for the cmdlet and Microsoft.PowerShell.Security
+    for the drive, and on the GitHub Windows image that module fails to
+    autoload: ``ConvertTo-SecureString`` comes back "found in the module ... but
+    the module could not be loaded", and ``Cert:`` then does not exist at all.
+    Depending on no module keeps provisioning working wherever the tests run.
+    """
+    executables = ("pwsh", "powershell")
+    last: subprocess.CompletedProcess[str] | None = None
+    for executable in executables:
+        try:
+            last = subprocess.run(
+                [
+                    executable,
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            continue
+        if last.returncode == 0:
+            return last.stdout
+    if last is None:
+        raise RuntimeError(f"none of {executables} could be launched")
+    if check:
+        # Surface both streams: PowerShell splits error records between them,
+        # and CalledProcessError alone shows only the argv.
         raise RuntimeError(
-            f"powershell failed ({proc.returncode}): {proc.stderr.strip()}"
+            f"powershell failed ({last.returncode}): "
+            f"{last.stderr.strip()} {last.stdout.strip()}".strip()
         )
-    return proc.stdout
+    return last.stdout
+
+
+# Written as real multi-line scripts: a newline is PowerShell's statement
+# separator, and gluing statements together with ";" around block closers is
+# the kind of thing that parses on one host and not another.
+#
+# Type literals and ::new() rather than New-Object, so the scripts depend on
+# no module at all -- not even Microsoft.PowerShell.Utility, which is where
+# New-Object lives. A module that will not load is what broke this in the
+# first place.
+_X509 = "System.Security.Cryptography.X509Certificates"
+
+_IMPORT_SCRIPT = f"""
+$ErrorActionPreference = 'Stop'
+$flags = [{_X509}.X509KeyStorageFlags]'Exportable,PersistKeySet,UserKeySet'
+$cert = [{_X509}.X509Certificate2]::new('{{path}}', '{{password}}', $flags)
+$store = [{_X509}.X509Store]::new('My', 'CurrentUser')
+$store.Open('ReadWrite')
+$store.Add($cert)
+$store.Close()
+$cert.Thumbprint
+"""
+
+_REMOVE_SCRIPT = f"""
+$store = [{_X509}.X509Store]::new('My', 'CurrentUser')
+$store.Open('ReadWrite')
+foreach ($c in @($store.Certificates)) {{{{
+    if ($c.Thumbprint -eq '{{thumbprint}}') {{{{
+        try {{{{
+            $key = [{_X509}.RSACertificateExtensions]::GetRSAPrivateKey($c)
+            if ($key -and $key.Key) {{{{ $key.Key.Delete() }}}}
+        }}}} catch {{{{ }}}}
+        $store.Remove($c)
+    }}}}
+}}}}
+$store.Close()
+"""
+
+
+def _import_pfx(path: object, password: str) -> str:
+    """Import a PFX into CurrentUser\\MY with its key marked exportable."""
+    return _powershell(
+        _IMPORT_SCRIPT.format(path=path, password=password)
+    ).strip()
+
+
+def _remove_from_store(thumbprint: str) -> None:
+    """Remove a certificate from CurrentUser\\MY, key material included.
+
+    Deleting the key container entry is best effort: it is inert once the
+    certificate is gone, but leaving it behind would litter a real machine.
+    """
+    _powershell(_REMOVE_SCRIPT.format(thumbprint=thumbprint), check=False)
 
 
 @dataclass
@@ -466,8 +548,8 @@ def store_identities(
     Both certificates share a subject and differ only in usage -- what Active
     Directory key archival provisions, and the case ``key_usage=`` exists for.
     They are signed by the conftest CA so the mtls_server fixture accepts them,
-    imported ``-Exportable`` so the PFX export can run unattended, and removed
-    (key included) afterwards. Only CurrentUser\\MY is ever touched.
+    imported with the key marked exportable so the PFX export can run
+    unattended, and removed afterwards. Only CurrentUser\\MY is ever touched.
     """
     signing = make_client_cert(
         WINSTORE_CN,
@@ -487,22 +569,23 @@ def store_identities(
         for label, bundle in (("sig", signing), ("enc", encryption)):
             path = directory / f"{label}.pfx"
             path.write_bytes(bundle.pkcs12(_PFX_PW))
-            _powershell(
-                f"$pw = ConvertTo-SecureString -String '{_PFX_PW}' "
-                "-Force -AsPlainText; "
-                f"Import-PfxCertificate -FilePath '{path}' "
-                "-CertStoreLocation Cert:\\CurrentUser\\My "
-                "-Password $pw -Exportable | Out-Null"
+            expected = cert_info(bundle.cert_pem).fingerprint_sha1
+            reported = _import_pfx(path, _PFX_PW)
+            assert reported.upper() == expected, (
+                f"imported {label}.pfx but the store reported thumbprint "
+                f"{reported!r}, not {expected!r}"
             )
-            imported.append(cert_info(bundle.cert_pem).fingerprint_sha1)
+            imported.append(expected)
+        # Fail here, loudly, rather than in whichever test looks first: a
+        # provisioning problem is not a library problem, and the distinction
+        # is invisible from a downstream assertion.
+        present = {c.thumbprint for c in list_windows_certificates()}
+        missing = [t for t in imported if t not in present]
+        assert not missing, f"provisioned certificates not found in MY: {missing}"
         yield StoreFixture(signing=signing, encryption=encryption)
     finally:
         for thumbprint in imported:
-            _powershell(
-                f"Remove-Item -Path Cert:\\CurrentUser\\My\\{thumbprint} "
-                "-DeleteKey -ErrorAction SilentlyContinue",
-                check=False,
-            )
+            _remove_from_store(thumbprint)
 
 
 def _listed(cn: str = WINSTORE_CN) -> list[WinCert]:
