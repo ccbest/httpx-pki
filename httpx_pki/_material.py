@@ -27,7 +27,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 from ._exceptions import CertificateLoadError
 
 if TYPE_CHECKING:  # imported for typing only -- see parse_pkcs12
-    from ._pkcs12 import IdentitySelector
+    from ._pkcs12 import IdentitySelector, P12Identity
     from ._select import UsageSelector
 
 # A source of bytes: either the raw bytes themselves, or a filesystem path
@@ -176,29 +176,121 @@ _PEM_BLOCK = re.compile(
 )
 
 
-def parse_pem_bundle(data: bytes, password: bytes | None) -> Material:
-    """Extract material from a PEM blob holding a key and one or more certs.
+def parse_pem_bundle(
+    data: bytes,
+    password: bytes | None,
+    *,
+    identity: IdentitySelector | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
+) -> Material:
+    """Extract material for one identity from a PEM blob.
 
-    The blocks may appear in any order; the certificate matching the private
-    key is treated as the client (leaf) certificate and the rest as the CA
-    chain. Certificates may also arrive inside a ``PKCS7`` block (a certs-only
-    ``.p7b`` re-encoded as PEM), whose contents are expanded in place. The
-    private key may be PKCS#1, PKCS#8, EC, or encrypted (decrypted with
-    *password*). Exactly one key is allowed: a bundle holding several --
-    almost certainly assembled from the wrong pieces -- is rejected rather
-    than silently using one of them.
+    The blocks may appear in any order; each certificate matching a private
+    key (paired by public key) is an *identity*, and the certificates matching
+    none are the CA chain. Certificates may also arrive inside a ``PKCS7``
+    block (a certs-only ``.p7b`` re-encoded as PEM), whose contents are
+    expanded in place. Keys may be PKCS#1, PKCS#8, EC, or encrypted (decrypted
+    with *password*).
+
+    A bundle usually holds exactly one identity, which is presented without
+    further ado. It may hold several -- two key+cert pairs concatenated, or a
+    renewed certificate alongside the one it replaces over a single key pair
+    -- and then the selectors choose which to present, exactly as for a
+    PKCS#12 bundle (:class:`~httpx_pki.AmbiguousCertificateError` is raised
+    without one). Every key must match a certificate: an unmatched key means
+    the bundle was assembled from the wrong pieces, and is rejected rather
+    than silently dropped.
     """
-    key_block: bytes | None = None
+    # Deferred: _pkcs12 builds on this module's helpers, so importing it here
+    # rather than at module scope keeps the dependency one-way.
+    from ._pkcs12 import select_identity
+
+    pairs, certs = _pem_pairs(data, password)
+    chosen = select_identity(
+        _identities_from_pairs(pairs),
+        identity=identity,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
+        source_kind="PEM data",
+    )
+    key = pairs[chosen.index][0]
+    # The other identities' certificates are leaves of their own, not
+    # intermediates on the way to a CA -- keep them out of the chain, exactly
+    # as the PKCS#12 path does.
+    leaves = {
+        cert.public_bytes(serialization.Encoding.DER) for _key, cert in pairs
+    }
+    key_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    cert_pem = chosen.certificate.public_bytes(serialization.Encoding.PEM)
+    ca_pems = [
+        c.public_bytes(serialization.Encoding.PEM)
+        for c in certs
+        if c.public_bytes(serialization.Encoding.DER) not in leaves
+    ]
+    return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
+
+
+def _pem_pairs(
+    data: bytes, password: bytes | None
+) -> tuple[list[tuple[PrivateKeyTypes, x509.Certificate]], list[x509.Certificate]]:
+    """The identities (key + matching certificate) and all certs in a PEM blob.
+
+    Identities are ordered by key appearance, then certificate appearance.
+    Byte-duplicated keys and duplicate (key, certificate) pairings collapse to
+    one; a key matching several distinct certificates -- what renewing without
+    rekeying produces -- yields one identity per certificate, mirroring the
+    PKCS#12 walk (:func:`~httpx_pki._pkcs12.load_bundle`).
+    """
+    key_blocks, certs = _pem_blocks(data)
+    if not key_blocks:
+        raise CertificateLoadError("no private key found in PEM data")
+    if not certs:
+        raise CertificateLoadError("no certificate found in PEM data")
+
+    # Keyed by SPKI: the same key pasted twice (or once as PKCS#1 and once as
+    # PKCS#8) is one key, not an assembly mistake.
+    keys: dict[bytes, PrivateKeyTypes] = {}
+    for block in key_blocks:
+        key = _load_private_key(block, password)
+        keys.setdefault(_spki(key.public_key()), key)
+
+    pairs: list[tuple[PrivateKeyTypes, x509.Certificate]] = []
+    for spki, key in keys.items():
+        seen: set[bytes] = set()
+        for cert in certs:
+            if _spki(cert.public_key()) != spki:
+                continue
+            der = cert.public_bytes(serialization.Encoding.DER)
+            if der in seen:
+                continue
+            seen.add(der)
+            pairs.append((key, cert))
+        if not seen:
+            raise CertificateLoadError(
+                "private key does not match any certificate in the PEM data"
+            )
+    return pairs, certs
+
+
+def _pem_blocks(
+    data: bytes,
+) -> tuple[list[bytes], list[x509.Certificate]]:
+    """The private-key blocks and certificates in a PEM blob, in file order.
+
+    Certificates inside a ``PKCS7`` block (a certs-only ``.p7b`` re-encoded as
+    PEM) are expanded in place.
+    """
+    key_blocks: list[bytes] = []
     certs: list[x509.Certificate] = []
     for match in _PEM_BLOCK.finditer(data):
         label = match.group(1)
         if b"PRIVATE KEY" in label:
-            if key_block is not None:
-                raise CertificateLoadError(
-                    "PEM data contains multiple private keys; a client bundle "
-                    "must hold exactly one"
-                )
-            key_block = match.group(0)
+            key_blocks.append(match.group(0))
         elif label == b"CERTIFICATE":
             certs.append(_load_certificate(match.group(0)))
         elif label == b"PKCS7":
@@ -208,22 +300,30 @@ def parse_pem_bundle(data: bytes, password: bytes | None) -> Material:
                 raise CertificateLoadError(
                     "could not parse PKCS#7 block in PEM data"
                 ) from exc
+    return key_blocks, certs
 
-    if key_block is None:
-        raise CertificateLoadError("no private key found in PEM data")
-    if not certs:
-        raise CertificateLoadError("no certificate found in PEM data")
 
-    key = _load_private_key(key_block, password)
-    leaf, chain = _split_leaf_and_chain(key, certs)
-    key_pem = key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    cert_pem = leaf.public_bytes(serialization.Encoding.PEM)
-    ca_pems = [c.public_bytes(serialization.Encoding.PEM) for c in chain]
-    return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
+def _identities_from_pairs(
+    pairs: list[tuple[PrivateKeyTypes, x509.Certificate]],
+) -> list[P12Identity]:
+    """The pairs as selectable identities (indexed in pair order)."""
+    from ._pkcs12 import P12Identity
+
+    return [
+        P12Identity(
+            index=index,
+            friendly_name=None,  # PEM bags carry no label
+            certificate=cert,
+            info=certificate_info(cert),
+        )
+        for index, (_key, cert) in enumerate(pairs)
+    ]
+
+
+def pem_identities(data: bytes, password: bytes | None) -> list[P12Identity]:
+    """Every identity in a PEM blob, for :func:`~httpx_pki.list_identities`."""
+    pairs, _certs = _pem_pairs(data, password)
+    return _identities_from_pairs(pairs)
 
 
 def load_material(
@@ -240,16 +340,17 @@ def load_material(
     anything else is treated as binary PKCS#12. The file *extension* is
     irrelevant -- only the bytes matter.
 
-    The identity selectors apply to PKCS#12 data. A PEM bundle holds exactly
-    one key by construction, so a selector that doesn't match its single
-    identity raises rather than being quietly ignored.
+    The identity selectors work for both encodings: a bundle holding several
+    identities requires one, and a selector that doesn't match anything raises
+    rather than being quietly ignored.
     """
     if b"-----BEGIN" in data:
-        material = parse_pem_bundle(data, password)
-        if identity is None and key_usage is None and extended_key_usage is None:
-            return material
-        return _select_pem_identity(
-            material, identity, key_usage, extended_key_usage
+        return parse_pem_bundle(
+            data,
+            password,
+            identity=identity,
+            key_usage=key_usage,
+            extended_key_usage=extended_key_usage,
         )
     return parse_pkcs12(
         data,
@@ -258,32 +359,6 @@ def load_material(
         key_usage=key_usage,
         extended_key_usage=extended_key_usage,
     )
-
-
-def _select_pem_identity(
-    material: Material,
-    identity: IdentitySelector | None,
-    key_usage: UsageSelector | None,
-    extended_key_usage: UsageSelector | None,
-) -> Material:
-    """Apply an identity selector to the one identity a PEM bundle holds."""
-    from ._pkcs12 import P12Identity, select_identity
-
-    cert = _load_certificate(material.cert_pem)
-    select_identity(
-        [
-            P12Identity(
-                index=0,
-                friendly_name=None,
-                certificate=cert,
-                info=certificate_info(cert),
-            )
-        ],
-        identity=identity,
-        key_usage=key_usage,
-        extended_key_usage=extended_key_usage,
-    )
-    return material
 
 
 def _spki(public_key: PublicKeyTypes) -> bytes:

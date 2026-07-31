@@ -197,6 +197,28 @@ def test_from_env_identity_selectors(
         assert session.cert_info().key_usage == frozenset({"digital_signature"})
 
 
+def test_from_env_identity_currently_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The literal selects whichever certificate is valid right now -- the
+    # renewal case, where the bundle holds the expired certificate alongside
+    # its replacement over the same key.
+    ca = make_ca()
+    expiring = make_client_cert("env-renewed", ca=ca, expired=True)
+    renewed = make_client_cert("env-renewed", ca=ca)
+    path = tmp_path / "renewal.p12"
+    path.write_bytes(
+        make_pkcs12([(expiring, "old"), (renewed, "new")], password="pw")
+    )
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(path))
+    monkeypatch.setenv("HTTPX_PKI_PASSWORD", "pw")
+    monkeypatch.setenv("HTTPX_PKI_IDENTITY", "currently_valid")
+    with PKIClient.from_env() as session:
+        assert (
+            session.cert_info().serial_number == renewed.cert.serial_number
+        )
+
+
 def test_from_env_identity_selector_conflicts_with_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -10,6 +10,7 @@ chain.
 from __future__ import annotations
 
 import datetime
+import pickle
 import warnings
 from pathlib import Path
 
@@ -26,6 +27,8 @@ from httpx_pki import (
     PKIClient,
     build_ssl_context,
     cert_info,
+    currently_valid,
+    list_identities,
     list_pkcs12_identities,
 )
 from httpx_pki._pkcs12 import _walk_key_bags, material_from_store_export
@@ -292,6 +295,91 @@ def test_pem_bundle_selector_applies(client: object) -> None:
         PKIClient(blob, key_usage="key_encipherment")
 
 
+# -- PEM bundles holding several identities ---------------------------------
+
+
+def _dual_pem(
+    dual_identities: tuple[CertBundle, CertBundle], ca_bundle: CertBundle
+) -> bytes:
+    """The dual key pair as one PEM blob: two key+cert pairs plus the CA."""
+    signing, encryption = dual_identities
+    return (
+        signing.key_pem
+        + signing.cert_pem
+        + encryption.key_pem
+        + encryption.cert_pem
+        + ca_bundle.cert_pem
+    )
+
+
+def test_pem_dual_bundle_lists_identities(
+    dual_identities: tuple[CertBundle, CertBundle], ca_bundle: CertBundle
+) -> None:
+    signing, encryption = dual_identities
+    identities = list_identities(_dual_pem(dual_identities, ca_bundle))
+    assert [i.index for i in identities] == [0, 1]
+    assert [i.info.serial_number for i in identities] == [
+        signing.cert.serial_number,
+        encryption.cert.serial_number,
+    ]
+    # PEM has no bag attributes, so there is no label to carry.
+    assert [i.friendly_name for i in identities] == [None, None]
+
+
+def test_list_identities_detects_pkcs12(dual_p12: bytes) -> None:
+    # The content-detecting entry point agrees with the PKCS#12-only one.
+    assert list_identities(dual_p12, P12_PASSWORD) == list_pkcs12_identities(
+        dual_p12, P12_PASSWORD
+    )
+
+
+def test_pem_dual_bundle_without_selector_is_ambiguous(
+    dual_identities: tuple[CertBundle, CertBundle], ca_bundle: CertBundle
+) -> None:
+    with pytest.raises(AmbiguousCertificateError, match="PEM data"):
+        PKIClient(_dual_pem(dual_identities, ca_bundle))
+
+
+def test_pem_dual_bundle_select_by_key_usage(
+    dual_identities: tuple[CertBundle, CertBundle], ca_bundle: CertBundle
+) -> None:
+    signing, _encryption = dual_identities
+    blob = _dual_pem(dual_identities, ca_bundle)
+    with PKIClient.from_pem(blob, key_usage="digital_signature") as session:
+        assert session.certificate.serial_number == signing.cert.serial_number
+        # The encryption identity's certificate is a leaf of its own, not a
+        # chain certificate; the CA stays in the chain.
+        assert session._material.ca_pems == [ca_bundle.cert_pem]
+
+
+def test_pem_dual_bundle_select_by_index(
+    dual_identities: tuple[CertBundle, CertBundle], ca_bundle: CertBundle
+) -> None:
+    _signing, encryption = dual_identities
+    blob = _dual_pem(dual_identities, ca_bundle)
+    with PKIClient.from_pem(blob, identity=1) as session:
+        assert session.certificate.serial_number == encryption.cert.serial_number
+
+
+def test_pem_dual_bundle_autodetected_with_selector(
+    dual_identities: tuple[CertBundle, CertBundle], ca_bundle: CertBundle
+) -> None:
+    # The content-detecting constructor path applies the selector too.
+    _signing, encryption = dual_identities
+    blob = _dual_pem(dual_identities, ca_bundle)
+    with PKIClient(blob, key_usage="key_encipherment") as session:
+        assert session.certificate.serial_number == encryption.cert.serial_number
+
+
+def test_build_ssl_context_pem_dual_bundle(
+    dual_identities: tuple[CertBundle, CertBundle], ca_bundle: CertBundle
+) -> None:
+    blob = _dual_pem(dual_identities, ca_bundle)
+    with pytest.raises(AmbiguousCertificateError):
+        build_ssl_context(blob)
+    build_ssl_context(blob, key_usage="digital_signature")
+
+
 # -- file layouts -----------------------------------------------------------
 
 
@@ -468,6 +556,116 @@ def test_renewal_selecting_the_valid_certificate(
         assert not session.is_expired
         # The certificate it replaces is not presented as a chain certificate.
         assert session._material.ca_pems == [ca_bundle.cert_pem]
+
+
+def test_pem_renewal_is_two_identities(ca_bundle: CertBundle) -> None:
+    # The PEM shape of the renewal case: one key block, the old and the new
+    # certificate concatenated after it.
+    expiring = make_client_cert("pem-renewed", ca=ca_bundle, expired=True)
+    renewed = _renewed(expiring, ca_bundle)
+    blob = (
+        expiring.key_pem
+        + expiring.cert_pem
+        + renewed.cert_pem
+        + ca_bundle.cert_pem
+    )
+    identities = list_identities(blob)
+    assert [i.info.serial_number for i in identities] == [
+        expiring.cert.serial_number,
+        renewed.cert.serial_number,
+    ]
+    with pytest.raises(AmbiguousCertificateError):
+        PKIClient(blob)
+    with PKIClient(blob, identity=currently_valid) as session:
+        assert session.certificate.serial_number == renewed.cert.serial_number
+        # The replaced certificate is not presented as a chain certificate.
+        assert session._material.ca_pems == [ca_bundle.cert_pem]
+
+
+# -- currently_valid --------------------------------------------------------
+
+
+def test_currently_valid_skips_the_expired_certificate(
+    renewal_p12: tuple[bytes, CertBundle, CertBundle]
+) -> None:
+    blob, _expiring, renewed = renewal_p12
+    with PKIClient(
+        blob, password=P12_PASSWORD, identity=currently_valid
+    ) as session:
+        assert session.certificate.serial_number == renewed.cert.serial_number
+        assert not session.is_expired
+
+
+def test_currently_valid_skips_the_not_yet_valid_certificate(
+    ca_bundle: CertBundle,
+) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    current = make_client_cert("future-user", ca=ca_bundle)
+    # Post-dated, with the later window: the tie-break must never resurrect a
+    # candidate the validity filter excluded.
+    future = make_client_cert(
+        "future-user",
+        ca=ca_bundle,
+        not_before=now + datetime.timedelta(days=30),
+        not_after=now + datetime.timedelta(days=400),
+    )
+    blob = make_pkcs12([(current, "now"), (future, "next")], password=P12_PASSWORD)
+    with PKIClient(
+        blob, password=P12_PASSWORD, identity=currently_valid
+    ) as session:
+        assert session.certificate.serial_number == current.cert.serial_number
+
+
+def test_currently_valid_prefers_the_renewed_during_overlap(
+    ca_bundle: CertBundle,
+) -> None:
+    # Both certificates are valid (the old one has not expired yet) and carry
+    # the same subject and usages, so freshness is the only difference -- the
+    # tie resolves to the later window.
+    now = datetime.datetime.now(datetime.timezone.utc)
+    old = make_client_cert(
+        "overlap-user", ca=ca_bundle, not_after=now + datetime.timedelta(days=20)
+    )
+    new = make_client_cert("overlap-user", ca=ca_bundle)
+    blob = make_pkcs12([(old, "old"), (new, "new")], password=P12_PASSWORD)
+    with PKIClient(
+        blob, password=P12_PASSWORD, identity=currently_valid
+    ) as session:
+        assert session.certificate.serial_number == new.cert.serial_number
+
+
+def test_currently_valid_keeps_a_dual_pair_ambiguous(dual_p12: bytes) -> None:
+    # Both halves are valid right now, and their windows differ only by mint
+    # time. Freshness cannot tell a signing certificate from an encryption
+    # one, so this must stay ambiguous rather than picking one arbitrarily.
+    with pytest.raises(AmbiguousCertificateError):
+        PKIClient(dual_p12, password=P12_PASSWORD, identity=currently_valid)
+
+
+def test_currently_valid_intersects_with_a_usage_selector(
+    dual_p12: bytes, dual_identities: tuple[CertBundle, CertBundle]
+) -> None:
+    signing, _encryption = dual_identities
+    with PKIClient(
+        dual_p12,
+        password=P12_PASSWORD,
+        identity=currently_valid,
+        key_usage="digital_signature",
+    ) as session:
+        assert session.certificate.serial_number == signing.cert.serial_number
+
+
+def test_currently_valid_with_nothing_valid_raises(ca_bundle: CertBundle) -> None:
+    first = make_client_cert("dead-user", ca=ca_bundle, expired=True)
+    second = make_client_cert("dead-user", ca=ca_bundle, expired=True)
+    blob = make_pkcs12([(first, "a"), (second, "b")], password=P12_PASSWORD)
+    with pytest.raises(CertificateNotFoundError):
+        PKIClient(blob, password=P12_PASSWORD, identity=currently_valid)
+
+
+def test_currently_valid_pickles_to_the_same_singleton() -> None:
+    # A SourceRef holding the selector must round-trip through pickle.
+    assert pickle.loads(pickle.dumps(currently_valid)) is currently_valid
 
 
 def test_non_repudiation_is_accepted_as_content_commitment(

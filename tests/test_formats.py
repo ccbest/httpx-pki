@@ -60,12 +60,23 @@ def test_pem_without_key_raises(client: Signed) -> None:
         PKIClient(client.cert_pem)
 
 
-def test_pem_with_multiple_keys_raises(client: Signed, ca: Signed) -> None:
-    # Two keys in one bundle means it was assembled from the wrong pieces;
-    # refuse it rather than silently picking one.
+def test_pem_with_unmatched_key_raises(client: Signed, ca: Signed) -> None:
+    # A second key with no certificate of its own means the bundle was
+    # assembled from the wrong pieces; refuse it rather than silently dropping
+    # the key. (Two complete key+cert pairs, by contrast, are two identities --
+    # see test_identity.py.)
     blob = client.key_pem + ca.key_pem + client.cert_pem
-    with pytest.raises(CertificateLoadError, match="multiple private keys"):
+    with pytest.raises(
+        CertificateLoadError, match="does not match any certificate"
+    ):
         PKIClient.from_pem(blob)
+
+
+def test_pem_with_duplicate_key_is_one_identity(client: Signed) -> None:
+    # The same key pasted twice is a copy-paste artifact, not an ambiguity.
+    blob = client.key_pem + client.key_pem + client.cert_pem
+    with PKIClient.from_pem(blob) as session:
+        assert session.cn == CLIENT_CN
 
 
 def test_pem_without_cert_raises(client: Signed) -> None:

@@ -8,6 +8,7 @@ guard, and the full constructor glue -- runs on any platform.
 from __future__ import annotations
 
 import ctypes
+import datetime
 import os
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from httpx_pki import (
     WinCert,
     build_windows_ssl_context,
     cert_info,
+    currently_valid,
     list_windows_certificates,
 )
 from httpx_pki._winstore import (
@@ -344,6 +346,49 @@ def test_ambiguous_message_shows_usage_and_expiry() -> None:
     message = str(exc.value)
     assert "key_usage=digital_signature" in message
     assert "expires=" in message
+
+
+def _record(bundle: CertBundle, friendly_name: str) -> WinCert:
+    """A synthetic store record for an already-minted bundle."""
+    info = cert_info(bundle.cert_pem)
+    return WinCert(
+        subject_cn=bundle.common_name,
+        friendly_name=friendly_name,
+        thumbprint=info.fingerprint_sha1,
+        certificate=bundle.cert,
+        info=info,
+    )
+
+
+def test_predicate_currently_valid_skips_the_expired_copy() -> None:
+    # A store keeps the expired certificate alongside its renewal; the
+    # ready-made selector picks the one that works right now.
+    cn = "ACME Renewed User"
+    old = make_client_cert(cn, expired=True)
+    new = make_client_cert(cn)
+    chosen = select_windows_certificate(
+        [_record(old, "old"), _record(new, "new")], predicate=currently_valid
+    )
+    assert chosen.friendly_name == "new"
+
+
+def test_predicate_currently_valid_prefers_the_later_window() -> None:
+    # Renewal overlap: both are valid and otherwise interchangeable, so the
+    # tie resolves to the later window.
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cn = "ACME Overlap User"
+    old = make_client_cert(cn, not_after=now + datetime.timedelta(days=20))
+    new = make_client_cert(cn)
+    chosen = select_windows_certificate(
+        [_record(old, "old"), _record(new, "new")], predicate=currently_valid
+    )
+    assert chosen.friendly_name == "new"
+
+
+def test_predicate_currently_valid_never_matches_unreadable_records() -> None:
+    # A record whose certificate could not be read cannot prove validity.
+    with pytest.raises(CertificateNotFoundError):
+        select_windows_certificate(CANDIDATES, predicate=currently_valid)
 
 
 # -- CERT_CONTEXT reading (simulated; the real struct is Windows-only) --------

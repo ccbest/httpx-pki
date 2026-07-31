@@ -36,6 +36,45 @@ the git history for the fine print.
   identity plus a stray chain certificate. Since nothing but the validity
   window distinguishes them, the identity listing in the error message carries
   each certificate's expiry.
+- **Multi-identity PEM bundles** are accepted everywhere PKCS#12 ones are. A
+  `.pem` concatenating two key+cert pairs — or one key followed by its old and
+  renewed certificates — used to be hard-rejected ("PEM data contains multiple
+  private keys"); it now holds selectable identities, chosen with the same
+  `identity=` / `key_usage=` / `extended_key_usage=` selectors on
+  `PKIClient(...)`, `from_pem`, `from_env`, and `build_ssl_context`. Keys are
+  paired to certificates by public key in any block order, the selection is
+  recorded so `reload()` / `auto_reload` re-select after a rotation, and the
+  other identities' certificates stay out of the presented chain. A key
+  matching no certificate is still rejected as an assembly mistake (a
+  byte-duplicated key block is not).
+- **Behavior change:** a PEM bundle holding one key and two certificates over
+  it — what renewing without rekeying produces — previously loaded silently,
+  presenting whichever certificate came first and relegating the other
+  (typically the renewal) to the chain. It now raises
+  `AmbiguousCertificateError` listing both, like its PKCS#12 counterpart;
+  `identity=currently_valid` is the usual resolution. Bundles holding a single
+  identity — very nearly all of them — are completely unaffected, and bundles
+  with several *keys* were never silently mis-loaded (they were refused
+  outright).
+- **`currently_valid`** answers "just give me the one that works right now" —
+  the renewal case, where a bundle or store holds the renewed certificate
+  alongside the one it replaces and previously only a hand-written predicate
+  could choose. It is accepted anywhere a predicate is:
+  `identity=currently_valid` for PKCS#12/PEM bundles,
+  `predicate=currently_valid` for the Windows store and macOS keychain, and
+  the literal `currently_valid` in `HTTPX_PKI_IDENTITY`. Not-yet-valid and
+  expired candidates never match; during a renewal overlap the tie resolves to
+  the latest validity window — but only between certificates that are
+  otherwise interchangeable (same subject and usages). The halves of a dual
+  key pair, whose windows differ only by seconds of mint time, stay ambiguous
+  rather than being picked between arbitrarily: freshness cannot tell a
+  signing certificate from an encryption one, so combine with `key_usage=`.
+  Survives pickling; `reload()` re-applies it, so a rotation that drops in the
+  next renewal is picked up without reconfiguration.
+- `list_identities()` reports what a certificate source holds — PKCS#12 or
+  PEM, detected from the content exactly like the constructors, and never
+  returning private keys. `list_pkcs12_identities` remains for callers who
+  want only PKCS#12 accepted.
 - **The platform stores got the same selectors.**
   `from_windows_cert_store`, `from_macos_keychain`, and their
   `build_*_ssl_context` counterparts take `key_usage=` and

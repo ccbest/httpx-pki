@@ -64,7 +64,7 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
         client = httpx.Client(verify=ctx)
 
     ``identity`` / ``key_usage`` / ``extended_key_usage`` choose between the
-    identities of a multi-identity PKCS#12 bundle, exactly as on
+    identities of a multi-identity PKCS#12 or PEM bundle, exactly as on
     :meth:`~httpx_pki.PKIClient.from_pkcs12`.
     """
     material = load_material(

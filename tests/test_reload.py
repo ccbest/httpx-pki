@@ -304,6 +304,39 @@ def test_reload_keeps_the_selected_identity(
         assert session.cert_info().key_usage == frozenset({"digital_signature"})
 
 
+def test_reload_keeps_the_selected_pem_identity(
+    ca_bundle: CertBundle, tmp_path: Path
+) -> None:
+    signing = make_client_cert(
+        "rot-dual-pem", ca=ca_bundle, key_usage=["digital_signature"]
+    )
+    encryption = make_client_cert(
+        "rot-dual-pem", ca=ca_bundle, key_usage=["key_encipherment"]
+    )
+    path = tmp_path / "dual.pem"
+    path.write_bytes(
+        signing.key_pem
+        + signing.cert_pem
+        + encryption.key_pem
+        + encryption.cert_pem
+    )
+    with PKIClient.from_pem(path, key_usage="digital_signature") as session:
+        before = session.certificate.serial_number
+        # The rotated file lists the pairs the other way round: a client that
+        # fell back to "whichever key comes first" would now present the
+        # encryption certificate.
+        _rotate(
+            path,
+            encryption.key_pem
+            + encryption.cert_pem
+            + signing.key_pem
+            + signing.cert_pem,
+        )
+        session.reload()
+        assert session.certificate.serial_number == before
+        assert session.cert_info().key_usage == frozenset({"digital_signature"})
+
+
 def test_auto_reload_keeps_the_selected_identity(
     ca_bundle: CertBundle, tmp_path: Path, mtls_server: object
 ) -> None:

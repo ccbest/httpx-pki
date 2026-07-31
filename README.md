@@ -45,8 +45,8 @@ extension never matters:
 
 | Input | Constructor | Notes |
 | --- | --- | --- |
-| **PKCS#12** (`.p12`, `.pfx`, binary) | `PKIClient(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob; may hold [several identities](#when-one-p12-holds-several-identities) |
-| **PEM bundle** (key + cert(s) in one file) | `PKIClient(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys |
+| **PKCS#12** (`.p12`, `.pfx`, binary) | `PKIClient(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob; may hold [several identities](#when-one-bundle-holds-several-identities) |
+| **PEM bundle** (key + cert(s) in one file) | `PKIClient(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys; may hold [several identities](#when-one-bundle-holds-several-identities) too |
 | **Separate cert + key** (PEM *or* DER) | `from_key_pair(...)` | optional `chain=` intermediates |
 | **PKCS#7 / `.p7b`** (certs only, DER or PEM) | `certificate=`/`chain=` in `from_key_pair`, or a `verify=` CA bundle | holds no private key — pairs with a separate key |
 | **Windows cert store** | `from_windows_cert_store(...)` | Windows only; see below |
@@ -71,10 +71,10 @@ PKIClient(Path("client.pfx"), password="secret")     # pathlib.Path
 PKIClient(p12_bytes, password=b"secret")             # bytes; password may be bytes
 ```
 
-### When one `.p12` holds several identities
+### When one bundle holds several identities
 
-A bundle can carry more than one **identity** — a private key with its
-certificate. Two identities for the same subject is routine wherever a CA
+A bundle — PKCS#12 or PEM alike — can carry more than one **identity**: a
+private key with its certificate. Two identities for the same subject is routine wherever a CA
 archives the key that *decrypts* data, so encrypted mail and files survive a
 lost laptop, but never the key that *signs*, which would defeat
 non-repudiation: Entrust dual key pairs, PIV/CAC, S/MIME key archival, national
@@ -109,20 +109,23 @@ AmbiguousCertificateError: this PKCS#12 data holds 2 identities:
 Pick one with identity= (index, name, or fingerprint), key_usage=, or extended_key_usage=.
 ```
 
-See what a file holds with `list_pkcs12_identities` (it never returns the
-private keys):
+See what a file holds with `list_identities` — it detects PKCS#12 vs PEM from
+the content, exactly like the constructors, and never returns the private keys
+(`list_pkcs12_identities` is the sibling for when only PKCS#12 should be
+accepted):
 
 ```python
-from httpx_pki import list_pkcs12_identities
+from httpx_pki import list_identities
 
-for identity in list_pkcs12_identities("corp.p12", password="secret"):
+for identity in list_identities("corp.p12", password="secret"):
     print(identity.index, identity.friendly_name,
           sorted(identity.info.key_usage), identity.info.extended_key_usage)
 ```
 
-Then select one. Every PKCS#12 entry point — `PKIClient(...)`,
-`from_pkcs12(...)`, `AsyncPKIClient`, and `build_ssl_context` — takes the same
-three selectors, and they intersect if you pass more than one:
+Then select one. Every bundle entry point — `PKIClient(...)`,
+`from_pkcs12(...)`, `from_pem(...)`, `AsyncPKIClient`, and
+`build_ssl_context` — takes the same three selectors, and they intersect if
+you pass more than one:
 
 ```python
 # by key usage: the usual discriminator for a dual key pair
@@ -155,16 +158,28 @@ camelCase and dotted OIDs are accepted too.
 The same applies when a file carries a **renewed certificate next to the one it
 replaces** — two certificates over one key pair, which is what renewing rather
 than rekeying produces. Those are two identities as well, and since only the
-validity window separates them, a predicate is usually the way to pick:
+validity window separates them, the ready-made `currently_valid` selector is
+the way to pick:
 
 ```python
-now = datetime.now(timezone.utc)
-PKIClient(
-  "corp.p12", 
-  password="secret", 
-  identity=lambda i: i.info.not_after > now
-)
+from httpx_pki import PKIClient, currently_valid
+
+PKIClient("corp.p12", password="secret", identity=currently_valid)
 ```
+
+Not-yet-valid and expired identities never match it. During the renewal
+*overlap*, when the old certificate has not expired yet, the tie resolves to
+the later validity window — but only between certificates that are otherwise
+interchangeable (same subject and usages). It never picks between the halves
+of a dual key pair: freshness cannot tell a signing certificate from an
+encryption one, so combine it with `key_usage=` there.
+
+**PEM bundles get the same treatment.** A `.pem` concatenating two key+cert
+pairs — or one key followed by its old and renewed certificates — holds
+several identities, chosen with the same selectors. Keys are paired to
+certificates by public key, in any block order; a key matching no certificate
+at all still means the bundle was assembled from the wrong pieces, and is
+rejected.
 
 The other identities' certificates are **not** presented as chain certificates
 — they are leaf certificates of their own, and a strict server can reject a
@@ -183,6 +198,10 @@ PKIClient("client.pem")                       # auto-detected
 PKIClient.from_pem("client.pem")              # explicit
 PKIClient.from_pem(pem_bytes, password="..")  # if the key block is encrypted
 ```
+
+A PEM bundle holding more than one key+cert pair takes the same `identity=` /
+`key_usage=` / `extended_key_usage=` selectors as PKCS#12 — see
+[several identities](#when-one-bundle-holds-several-identities).
 
 ### From a separate certificate and key
 
@@ -245,15 +264,13 @@ for c in list_windows_certificates():        # location="LocalMachine" for the m
 Each `WinCert` also carries the parsed `certificate` and its `info`
 (a [`CertInfo`](#inspecting-the-certificate)), so a predicate can select on
 anything a certificate holds — including skipping the expired copy a store
-tends to keep after a renewal:
+tends to keep after a renewal, which the ready-made `currently_valid`
+selector does for you:
 
 ```python
-from datetime import datetime, timezone
+from httpx_pki import currently_valid
 
-now = datetime.now(timezone.utc)
-PKIClient.from_windows_cert_store(
-    name="ACME", predicate=lambda c: c.info is not None and c.info.not_after > now
-)
+PKIClient.from_windows_cert_store(name="ACME", predicate=currently_valid)
 ```
 
 Notes:
@@ -289,6 +306,9 @@ PKIClient.from_macos_keychain(predicate=lambda c: c.label == "prod")
 # Both halves of a dual key pair in one keychain, told apart by usage:
 PKIClient.from_macos_keychain(name="ACME", key_usage="digital_signature")
 PKIClient.from_macos_keychain(name="ACME", extended_key_usage="email_protection")
+
+# The renewed identity rather than the expired one kept alongside it:
+PKIClient.from_macos_keychain(name="ACME", predicate=currently_valid)
 ```
 
 `list_macos_certificates()` returns a `MacCert` per identity — subject CN,
@@ -329,7 +349,7 @@ with PKIClient.from_env() as client:        # reads HTTPX_PKI_* by default
 | `HTTPX_PKI_KEY` | path to a separate private key; switches to cert+key mode |
 | `HTTPX_PKI_CHAIN` | intermediates to present, in addition to any carried by `CERT` |
 | `HTTPX_PKI_CA` | CA bundle for **server** trust (`verify=`), or the literal `system` for the OS trust store |
-| `HTTPX_PKI_IDENTITY` | which identity to present when `CERT` holds several: a file position, a name substring, or a fingerprint |
+| `HTTPX_PKI_IDENTITY` | which identity to present when `CERT` holds several: a file position, a name substring, a fingerprint, or the literal `currently_valid` |
 | `HTTPX_PKI_KEY_USAGE` | identity selector by key usage, comma-separated (e.g. `digital_signature`) |
 | `HTTPX_PKI_EXT_KEY_USAGE` | identity selector by extended key usage, comma-separated (e.g. `client_auth`) |
 

@@ -49,7 +49,7 @@ class SourceRef:
 
 
 def _selectors(args: dict[str, Any]) -> dict[str, Any]:
-    """The PKCS#12 identity selectors recorded on a ref.
+    """The identity selectors recorded on a ref (PKCS#12 or PEM).
 
     ``.get`` rather than indexing: refs pickled before identity selection
     existed carry only the certificate arguments, and must keep reloading.
@@ -76,7 +76,9 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     if ref.kind == "pkcs12":
         return parse_pkcs12(read_source(args["cert"]), pw, **_selectors(args))
     if ref.kind == "pem":
-        return parse_pem_bundle(read_source(args["source"]), pw)
+        return parse_pem_bundle(
+            read_source(args["source"]), pw, **_selectors(args)
+        )
     if ref.kind == "key_pair":
         return normalize_pem(
             args["certificate"], args["private_key"], pw, args["chain"]

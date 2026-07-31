@@ -12,7 +12,9 @@ PKCS#12 bag name -- but the question is the same, so the vocabulary is shared:
 * :func:`select_certificate` is the generic store selector, wrapped by each
   platform module with its concrete type
   (:func:`~httpx_pki._winstore.select_windows_certificate`,
-  :func:`~httpx_pki._keychain.select_macos_certificate`).
+  :func:`~httpx_pki._keychain.select_macos_certificate`);
+* :data:`currently_valid` is the ready-made renewal selector, accepted
+  anywhere a predicate is.
 
 Every selector **intersects**: each one given narrows the candidates further,
 so a name and a key usage together mean "both", never "whichever is more
@@ -22,6 +24,7 @@ combination.
 
 from __future__ import annotations
 
+import datetime
 from collections.abc import Callable, Iterable, Sequence
 from typing import Protocol, TypeVar
 
@@ -91,6 +94,97 @@ class _CertDetails:
 def normalize_thumbprint(value: str) -> str:
     """Normalize a thumbprint for comparison: strip colons/spaces, uppercase."""
     return value.replace(":", "").replace(" ", "").upper()
+
+
+# -- the currently-valid selector -------------------------------------------
+
+
+class _CurrentlyValid:
+    """The ready-made "whichever certificate is valid right now" selector.
+
+    See :data:`currently_valid`, its only instance.
+    """
+
+    def __call__(self, candidate: _StoreCert) -> bool:
+        info = candidate.info
+        if info is None:
+            return False
+        now = datetime.datetime.now(datetime.timezone.utc)
+        return info.not_before <= now <= info.not_after
+
+    @staticmethod
+    def narrow(matches: Sequence[_C]) -> list[_C]:
+        """Of several valid candidates, the one(s) with the latest window.
+
+        Freshness can break a tie only between certificates that are otherwise
+        interchangeable -- a renewal overlap, where the certificates differ in
+        nothing but their validity window. Candidates that differ in subject or
+        usage (the halves of a dual key pair, minted moments apart) are *not*
+        interchangeable, so they are returned unchanged and the ambiguity
+        surfaces, pointing at a usage selector.
+        """
+        profiles = {
+            (
+                m.info.distinguished_name,
+                m.info.key_usage,
+                tuple(sorted(m.info.extended_key_usage)),
+            )
+            for m in matches
+            if m.info is not None
+        }
+        if len(profiles) != 1:
+            return list(matches)
+        latest = max(
+            (m.info.not_after, m.info.not_before)
+            for m in matches
+            if m.info is not None
+        )
+        return [
+            m
+            for m in matches
+            if m.info is not None
+            and (m.info.not_after, m.info.not_before) == latest
+        ]
+
+    def __repr__(self) -> str:
+        return "httpx_pki.currently_valid"
+
+    def __reduce__(self) -> str:
+        # Pickle by name, so an unpickled SourceRef holds this same instance.
+        return "currently_valid"
+
+
+currently_valid = _CurrentlyValid()
+"""Selector for the certificate whose validity window contains *now*.
+
+Usable anywhere a predicate is: ``identity=currently_valid`` for PKCS#12 and
+PEM bundles, ``predicate=currently_valid`` for the platform stores. Built for
+the renewal case -- a bundle or store holding the renewed certificate alongside
+the one it replaces::
+
+    PKIClient("corp.p12", password=pw, identity=currently_valid)
+
+Not-yet-valid and expired candidates never match. During a renewal *overlap*,
+when old and new are both valid, the tie resolves to the latest validity window
+-- but only between certificates that are otherwise interchangeable (same
+subject and usages). The halves of a dual key pair stay ambiguous: freshness
+cannot tell a signing certificate from an encryption one, so combine with
+``key_usage=`` instead.
+"""
+
+
+def _narrowed(selector: object, matches: list[_C]) -> list[_C]:
+    """Apply a selector's tie-break, when it carries one and several match.
+
+    A selector object may expose ``narrow(matches)`` returning the subset it
+    considers best (:data:`currently_valid` keeps the latest validity window).
+    It runs only after every filter has intersected, so it breaks ties the
+    filters could not -- it never overrides an explicit selector.
+    """
+    narrow = getattr(selector, "narrow", None)
+    if narrow is None or len(matches) < 2:
+        return matches
+    return narrow(matches) or matches
 
 
 # -- usage vocabulary -------------------------------------------------------
@@ -212,6 +306,8 @@ def select_certificate(  # pylint: disable=too-many-arguments
     *aliases* extracts from each candidate, and the ``key_usage`` /
     ``extended_key_usage`` the certificate must assert. With no selector, all
     candidates qualify (handy when the store holds exactly one).
+    ``predicate=currently_valid`` picks the certificate whose validity window
+    contains now, preferring the renewed one during a renewal overlap.
 
     Raises :class:`~httpx_pki.CertificateNotFoundError` if nothing matches and
     :class:`~httpx_pki.AmbiguousCertificateError` if more than one does.
@@ -236,6 +332,8 @@ def select_certificate(  # pylint: disable=too-many-arguments
         matches = [
             c for c in matches if matches_usages(c, key_usage, extended_key_usage)
         ]
+    if predicate is not None:
+        matches = _narrowed(predicate, matches)
 
     selector = _selector_repr(
         name, thumbprint, predicate, key_usage, extended_key_usage

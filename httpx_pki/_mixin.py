@@ -303,6 +303,9 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
                 "corp.p12", password=pw, key_usage="digital_signature"
             )
 
+        For a bundle holding a renewed certificate alongside the one it
+        replaces, ``identity=httpx_pki.currently_valid`` presents whichever is
+        valid right now (preferring the renewed one while both are).
         See :func:`~httpx_pki.list_pkcs12_identities` for what a file holds.
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
@@ -331,23 +334,38 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         password: Password = None,
         *,
         verify: VerifyTypes = True,
+        identity: IdentitySelector | None = None,
+        key_usage: UsageSelector | None = None,
+        extended_key_usage: UsageSelector | None = None,
         warn_if_expires_within: datetime.timedelta | None = None,
         auto_reload: bool | datetime.timedelta = False,
         strict_validity: bool = False,
         **kwargs: Any,
     ) -> _S:
-        """Build a session from a single PEM blob holding the key and cert(s).
+        """Build a session from a single PEM blob holding the key(s) and cert(s).
 
+        A blob usually holds one key+certificate identity plus chain certs. It
+        may hold several -- two key+cert pairs concatenated, or a renewed
+        certificate alongside the one it replaces over a single key -- and then
+        ``identity`` / ``key_usage`` / ``extended_key_usage`` choose which to
+        present, exactly as on :meth:`from_pkcs12` (without a selector,
+        :class:`~httpx_pki.AmbiguousCertificateError` is raised). See
+        :func:`~httpx_pki.list_identities` for what a blob holds.
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
         """
         encoded = encode_password(password)
-        material = parse_pem_bundle(read_source(source), encoded)
+        selectors: dict[str, Any] = {
+            "identity": identity,
+            "key_usage": key_usage,
+            "extended_key_usage": extended_key_usage,
+        }
+        material = parse_pem_bundle(read_source(source), encoded, **selectors)
         return cls._from_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("pem", {"source": source}, encoded),
+            source=SourceRef("pem", {"source": source, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -416,7 +434,9 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         keychain label), ``thumbprint``, a ``predicate`` callable, or the
         ``key_usage`` / ``extended_key_usage`` the certificate must assert;
         every selector given must match. A keychain holding both halves of a
-        dual key pair needs the usage to choose between them::
+        dual key pair needs the usage to choose between them, and one holding a
+        renewed certificate alongside the one it replaces can take
+        ``predicate=httpx_pki.currently_valid``::
 
             AsyncPKIClient.from_macos_keychain(
                 "corp-user", key_usage="digital_signature"
@@ -476,7 +496,9 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         a ``predicate`` callable, or the ``key_usage`` / ``extended_key_usage``
         the certificate must assert; every selector given must match. A store
         holding both halves of a dual key pair -- what Active Directory key
-        archival provisions -- needs the usage to choose between them::
+        archival provisions -- needs the usage to choose between them, and one
+        holding a renewed certificate alongside the one it replaces can take
+        ``predicate=httpx_pki.currently_valid``::
 
             PKIClient.from_windows_cert_store(
                 "corp-user", key_usage="digital_signature"

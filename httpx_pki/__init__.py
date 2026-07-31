@@ -22,7 +22,8 @@ from ._keychain import (
     select_macos_certificate,
 )
 from ._material import CertInfo, Material, cert_info
-from ._pkcs12 import P12Identity, list_pkcs12_identities
+from ._pkcs12 import P12Identity, list_identities, list_pkcs12_identities
+from ._select import currently_valid
 from ._ssl import build_macos_ssl_context, build_ssl_context, build_windows_ssl_context
 from ._winstore import (
     WinCert,
@@ -36,7 +37,9 @@ __all__ = [
     "build_ssl_context",
     "build_macos_ssl_context",
     "build_windows_ssl_context",
+    "list_identities",
     "list_pkcs12_identities",
+    "currently_valid",
     "list_macos_certificates",
     "select_macos_certificate",
     "list_windows_certificates",

@@ -53,11 +53,13 @@ from ._material import (
     _spki,
     certificate_info,
     encode_password,
+    pem_identities,
     read_source,
 )
 from ._select import (
     UsageSelector,
     _CertDetails,
+    _narrowed,
     matches_usages,
     normalize_thumbprint,
 )
@@ -65,14 +67,15 @@ from ._select import (
 
 @dataclass(frozen=True)
 class P12Identity(_CertDetails):
-    """One private key and its certificate inside a PKCS#12 bundle.
+    """One private key and its certificate inside a PKCS#12 or PEM bundle.
 
-    ``index`` is the identity's position in the file -- ``0`` is the one every
-    PKCS#12 reader picks when asked for "the" key, including this library
-    before identity selection existed. ``friendly_name`` is the label the
-    exporting tool attached (``localKeyID``/``friendlyName`` bag attributes),
-    often the only human hint about which identity is which; it is frequently
-    absent, so prefer ``info.key_usage`` to tell a signing identity from an
+    ``index`` is the identity's position in the file -- for PKCS#12, ``0`` is
+    the one every reader picks when asked for "the" key, including this
+    library before identity selection existed. ``friendly_name`` is the label
+    the exporting tool attached (``localKeyID``/``friendlyName`` bag
+    attributes), often the only human hint about which identity is which; it
+    is frequently absent -- and always ``None`` for PEM, which has no labels
+    -- so prefer ``info.key_usage`` to tell a signing identity from an
     encryption one.
 
     The private key is deliberately *not* exposed here: listing what a file
@@ -449,9 +452,31 @@ def list_pkcs12_identities(
     actually use one.
 
     Raises :class:`~httpx_pki.CertificateLoadError` if the data isn't a
-    readable PKCS#12 bundle (a wrong password lands here too).
+    readable PKCS#12 bundle (a wrong password lands here too). For a source
+    that may be PEM instead, see :func:`~httpx_pki.list_identities`.
     """
     bundle = load_bundle(read_source(source), encode_password(password))
+    return [loaded.identity for loaded in bundle.identities]
+
+
+def list_identities(
+    source: CertSource, password: Password = None
+) -> list[P12Identity]:
+    """List the identities in a certificate source, PKCS#12 or PEM.
+
+    The content-detecting sibling of :func:`~httpx_pki.list_pkcs12_identities`:
+    it accepts exactly what a session constructor's certificate source accepts
+    -- a path or bytes, PEM recognized by its ``-----BEGIN`` armor, anything
+    else read as PKCS#12 -- and reports what the file holds without exposing
+    any private key. A PEM identity is a private key block paired with the
+    certificate matching its public key; PEM carries no labels, so
+    ``friendly_name`` is always ``None`` there.
+    """
+    data = read_source(source)
+    encoded = encode_password(password)
+    if b"-----BEGIN" in data:
+        return pem_identities(data, encoded)
+    bundle = load_bundle(data, encoded)
     return [loaded.identity for loaded in bundle.identities]
 
 
@@ -483,6 +508,7 @@ def select_identity(
     identity: IdentitySelector | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
+    source_kind: str = "PKCS#12 data",
 ) -> P12Identity:
     """Choose one identity from *identities*.
 
@@ -490,6 +516,10 @@ def select_identity(
     file position, name, fingerprint, or predicate, while ``key_usage`` and
     ``extended_key_usage`` require the named usages to be present -- the usual
     way to separate a signing identity from an encryption one.
+    ``identity=currently_valid`` picks the identity whose validity window
+    contains now, preferring the renewed one during a renewal overlap.
+    *source_kind* names the container in error messages (the same selection
+    serves PKCS#12 and multi-identity PEM bundles).
 
     Raises :class:`~httpx_pki.CertificateNotFoundError` if nothing matches and
     :class:`~httpx_pki.AmbiguousCertificateError` if more than one does --
@@ -513,17 +543,21 @@ def select_identity(
         matches = [
             i for i in matches if matches_usages(i, key_usage, extended_key_usage)
         ]
+    if identity is not None:
+        # After every filter has intersected: a selector carrying a tie-break
+        # (currently_valid) must never override an explicit usage selector.
+        matches = _narrowed(identity, matches)
 
     selector = " + ".join(described)
     if not matches:
         raise CertificateNotFoundError(
-            f"{selector} matched no identity in the PKCS#12 data, which holds:"
+            f"{selector} matched no identity in the {source_kind}, which holds:"
             f"\n{_listing(identities)}"
         )
     if len(matches) > 1:
         if not selector:
             raise AmbiguousCertificateError(
-                f"this PKCS#12 data holds {len(matches)} identities:"
+                f"this {source_kind} holds {len(matches)} identities:"
                 f"\n{_listing(matches)}\n"
                 "Pick one with identity= (index, name, or fingerprint), "
                 "key_usage=, or extended_key_usage=."
