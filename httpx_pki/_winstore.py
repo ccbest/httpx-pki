@@ -56,8 +56,13 @@ class WinCert(_CertDetails):
     friendly_name: str | None
     thumbprint: str
     handle: Any = None
-    certificate: x509.Certificate | None = field(default=None, repr=False)
-    info: CertInfo | None = field(default=None, repr=False)
+    # compare=False keeps these out of __eq__/__hash__: CertInfo holds lists,
+    # so including it would make the record unhashable -- and both fields are
+    # derived from bytes the thumbprint already identifies.
+    certificate: x509.Certificate | None = field(
+        default=None, repr=False, compare=False
+    )
+    info: CertInfo | None = field(default=None, repr=False, compare=False)
 
 
 def select_windows_certificate(  # pylint: disable=too-many-arguments

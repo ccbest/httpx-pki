@@ -554,3 +554,11 @@ def test_store_export_suppression_is_narrow(
     monkeypatch.setattr("httpx_pki._pkcs12.pkcs12.load_pkcs12", noisy)
     with pytest.warns(UserWarning, match="an unrelated concern"):
         material_from_store_export(blob, P12_PASSWORD.encode(), thumbprint)
+
+
+def test_identities_are_hashable(dual_p12: bytes) -> None:
+    # CertInfo holds lists, so a frozen dataclass including it in __eq__ hashes
+    # to a TypeError. Anyone deduping enumerated certificates would hit it.
+    identities = list_pkcs12_identities(dual_p12, P12_PASSWORD)
+    assert len(set(identities)) == 2
+    assert len({identities[0], identities[0]}) == 1

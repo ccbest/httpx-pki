@@ -628,3 +628,16 @@ def test_other_export_failures_keep_the_generic_message() -> None:
     assert "PFX export failed" in message
     assert "0x00000005" in message
     assert "not exportable" not in message
+
+
+def test_records_are_hashable_and_compare_on_identity() -> None:
+    # list_windows_certificates() results must survive set()/dict use; the
+    # parsed certificate and info are derived, so they stay out of equality.
+    assert len(set(DUAL)) == 2
+    plain = WinCert(
+        subject_cn=DUAL[0].subject_cn,
+        friendly_name=DUAL[0].friendly_name,
+        thumbprint=DUAL[0].thumbprint,
+    )
+    assert plain == DUAL[0]
+    assert len({plain, DUAL[0]}) == 1

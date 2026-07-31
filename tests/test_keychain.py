@@ -588,3 +588,16 @@ def test_keychain_listing_reports_usages(
         assert candidate.info is not None
         assert candidate.certificate is not None
         assert candidate.handle is None  # released before returning
+
+
+def test_records_are_hashable_and_compare_on_identity() -> None:
+    # list_macos_certificates() results must survive set()/dict use; the
+    # parsed certificate and info are derived, so they stay out of equality.
+    assert len(set(DUAL)) == 2
+    plain = MacCert(
+        subject_cn=DUAL[0].subject_cn,
+        label=DUAL[0].label,
+        thumbprint=DUAL[0].thumbprint,
+    )
+    assert plain == DUAL[0]
+    assert len({plain, DUAL[0]}) == 1

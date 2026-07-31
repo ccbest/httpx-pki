@@ -83,7 +83,9 @@ class P12Identity(_CertDetails):
     index: int
     friendly_name: str | None
     certificate: x509.Certificate
-    info: CertInfo
+    # Excluded from __eq__/__hash__: it is derived from `certificate`, and the
+    # lists it holds would make identities unhashable (so no set() of them).
+    info: CertInfo = field(compare=False)
 
     @property
     def subject_cn(self) -> str | None:
