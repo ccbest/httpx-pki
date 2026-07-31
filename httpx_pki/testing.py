@@ -424,7 +424,13 @@ def _encrypted_content_info(payload: bytes, password: bytes) -> bytes:
     )
 
 
-def _pkcs12_key(password: bytes, salt: bytes, purpose: int, length: int) -> bytes:
+def _pkcs12_key(  # pylint: disable=too-many-arguments
+    password: bytes,
+    salt: bytes,
+    purpose: int,
+    length: int,
+    iterations: int = _ITERATIONS,
+) -> bytes:
     """The RFC 7292 Appendix B.2 key derivation, over SHA-256.
 
     Needed only for the MAC key: everything else in the file is encrypted with
@@ -442,7 +448,7 @@ def _pkcs12_key(password: bytes, salt: bytes, purpose: int, length: int) -> byte
     output = b""
     while len(output) < length:
         digest = hashlib.sha256(diversifier + buffer).digest()
-        for _ in range(_ITERATIONS - 1):
+        for _ in range(iterations - 1):
             digest = hashlib.sha256(digest).digest()
         addend = int.from_bytes(_repeat(digest, block), "big") + 1
         modulus = 1 << (block * 8)
@@ -464,24 +470,34 @@ def _repeat(data: bytes, block: int) -> bytes:
     return (data * (size // len(data) + 1))[:size]
 
 
-def _mac_data(authenticated_safe: bytes, password: bytes) -> bytes:
+def _mac_data(authenticated_safe: bytes, password: bytes, strict_der: bool) -> bytes:
+    """The authenticated safe's HMAC, with its iteration count.
+
+    ``MacData.iterations`` carries ``DEFAULT 1``, and DER requires a field
+    equal to its default to be omitted. Writing it anyway is valid BER but not
+    DER -- the shape some platform exporters emit, and what makes
+    ``cryptography`` fall back to a BER parse with a warning. *strict_der*
+    ``False`` reproduces it.
+    """
     salt = os.urandom(8)
-    key = _pkcs12_key(password, salt, purpose=3, length=32)
+    iterations = _ITERATIONS if strict_der else 1
+    key = _pkcs12_key(password, salt, purpose=3, length=32, iterations=iterations)
     digest = hmac.new(key, authenticated_safe, hashlib.sha256).digest()
     return _seq(
         _seq(_seq(_oid(_OID_SHA256), _null()), _octets(digest)),
         _octets(salt),
-        _integer(_ITERATIONS),
+        _integer(iterations),
     )
 
 
-def make_pkcs12(  # pylint: disable=too-many-locals
+def make_pkcs12(  # pylint: disable=too-many-locals,too-many-arguments
     identities: Sequence[CertBundle | tuple[CertBundle, str | None]],
     *,
     password: bytes | str = b"",
     encrypt_certs: bool = True,
     mac: bool = True,
     keys_in_encrypted_safe: bool = False,
+    strict_der: bool = True,
 ) -> bytes:
     """Serialize one or more identities into a single PKCS#12 blob.
 
@@ -506,6 +522,14 @@ def make_pkcs12(  # pylint: disable=too-many-locals
     *keys_in_encrypted_safe* to hide the key bags inside the encrypted portion
     (the one layout in which identities cannot be enumerated, which is what
     makes it worth testing).
+
+    *strict_der* ``False`` writes the MAC iteration count even though its
+    ASN.1 default already implies it -- valid BER, but not the DER PKCS#12
+    calls for. Some platform exporters (the macOS Security framework among
+    them) emit exactly that, which makes ``cryptography`` re-parse the bundle
+    as BER and warn about it; pass ``False`` to test how your code copes. Only
+    takes effect together with a password, since an unauthenticated bundle has
+    no MAC to encode.
     """
     secret = password.encode() if isinstance(password, str) else password
     if keys_in_encrypted_safe and not secret:
@@ -546,5 +570,5 @@ def make_pkcs12(  # pylint: disable=too-many-locals
     authenticated_safe = _seq(*safes)
     elements = [_integer(3), _data_content_info(authenticated_safe)]
     if mac and secret:
-        elements.append(_mac_data(authenticated_safe, secret))
+        elements.append(_mac_data(authenticated_safe, secret, strict_der))
     return _seq(*elements)

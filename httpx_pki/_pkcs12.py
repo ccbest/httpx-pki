@@ -30,6 +30,7 @@ identity -- exactly the behavior of earlier releases.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
@@ -590,11 +591,36 @@ def material_from_store_export(
     picked. No platform should do that, and guessing is better than failing on a
     selector the caller never wrote: fall back to the unpinned load so the real
     problem surfaces as itself.
+
+    Platform exports are also not always strict DER -- the macOS Security
+    framework writes a field whose ASN.1 DEFAULT already implies it, so
+    ``cryptography`` warns and re-parses as BER. The caller cannot influence
+    bytes the operating system generated and this code consumed, so that
+    warning is silenced here; it is left in place for caller-supplied files,
+    where re-exporting the file is a real fix.
     """
-    try:
-        return pkcs12_material(data, password, identity=thumbprint)
-    except CertificateNotFoundError:
-        return pkcs12_material(data, password)
+    with warnings.catch_warnings():
+        # Narrow by message as well as category: this must not mask any other
+        # warning cryptography raises about the material.
+        warnings.filterwarnings(
+            "ignore",
+            message=".*could not be parsed as DER.*",
+            category=UserWarning,
+        )
+        try:
+            return pkcs12_material(data, password, identity=thumbprint)
+        except CertificateNotFoundError:
+            return pkcs12_material(data, password)
+        except CertificateLoadError as exc:
+            # cryptography warns today that the BER fallback "may become an
+            # exception". If it ever does, the generic message ("invalid
+            # PKCS#12 data or wrong password") would send someone hunting a
+            # password that this library generated itself.
+            raise CertificateLoadError(
+                "the certificate exported by the platform store could not be "
+                "parsed. Platform exports are not always strict DER, which "
+                "cryptography has warned about and may have stopped accepting"
+            ) from exc
 
 
 def pkcs12_material(
