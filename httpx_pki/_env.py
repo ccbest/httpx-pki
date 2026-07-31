@@ -14,6 +14,7 @@ the environment rather than code. Given a *prefix* (default ``HTTPX_PKI_``):
                               (``verify=``), or the literal ``system`` for
                               the OS trust store or ``certifi`` for the
                               certifi bundle; absent means default trust
+                              (the OS trust store since 0.8)
 ``{prefix}IDENTITY``          which identity to present when ``CERT`` is a
                               PKCS#12 or PEM bundle holding several: a file
                               position (``0``), a name substring, a

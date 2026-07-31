@@ -1,16 +1,17 @@
-"""Resolve the HTTP backend: httpx2 when installed, httpx otherwise.
+"""Resolve the HTTP backend: httpx2 (the required dependency) or httpx.
 
 httpx development has continued under pydantic's stewardship as `httpx2
 <https://github.com/pydantic/httpx2>`_, which is API-compatible with httpx.
-httpx-pki works with either; every internal module imports the backend from
-here (``from ._compat import httpx``) so the whole package binds to one
-resolved backend, chosen at first import:
+Since 0.8 httpx2 is httpx-pki's required dependency, with the original httpx
+supported as a fallback (have ``httpx>=0.28`` installed; there is no extra
+for it -- extras are additive, so one could not remove httpx2). Every internal
+module imports the backend from here (``from ._compat import httpx``) so the
+whole package binds to one resolved backend, chosen at first import:
 
 1. ``HTTPX_PKI_BACKEND=httpx`` or ``HTTPX_PKI_BACKEND=httpx2`` in the
-   environment forces that backend (an escape hatch for environments where
-   httpx2 arrives as a transitive dependency of something else but existing
-   code still expects :class:`~httpx_pki.PKIClient` to subclass
-   ``httpx.Client``).
+   environment forces that backend (an escape hatch for code that expects
+   :class:`~httpx_pki.PKIClient` to subclass the original ``httpx.Client``
+   even though httpx2 is installed).
 2. Otherwise httpx2 is preferred when importable, falling back to httpx.
 
 The resolution is import-time and process-wide; :data:`HTTP_BACKEND` reports
@@ -18,8 +19,9 @@ which backend won. Nothing here touches ``sys.modules`` -- a user's own
 ``import httpx`` is never redirected (that is ``httpx2.alias_httpx()``'s job,
 and calling it is the application's decision, not this library's).
 
-For type checkers the backend is always httpx: httpx2 is typed as a drop-in
-replacement, so annotating against httpx stays correct on both.
+For type checkers the backend is always httpx2 -- the required dependency, so
+it is resolvable in every environment that has httpx-pki. httpx is typed
+API-compatibly, so the annotations stay correct on the fallback too.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import httpx
+    import httpx2 as httpx
 else:
     _requested = os.environ.get("HTTPX_PKI_BACKEND")
     if _requested == "httpx":

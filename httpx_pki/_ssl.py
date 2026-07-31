@@ -34,13 +34,12 @@ from ._pkcs12 import IdentitySelector, material_from_store_export
 from ._select import UsageSelector
 from ._winstore import Predicate
 
-# Accepted values for ``verify``: ``True`` (default CA bundle), ``False``
-# (no server verification), the literal string ``"system"`` (the OS trust
-# store, via the truststore package -- optional with httpx, always present
-# with httpx2), the literal string ``"certifi"`` (the certifi bundle, which
-# is also what ``True`` means until 0.8 flips the default to the OS store),
-# a path to a CA bundle (PEM or certs-only PKCS#7), or a ready-made
-# SSLContext.
+# Accepted values for ``verify``: ``True`` (the OS trust store, the default
+# since 0.8 -- matching httpx2), ``False`` (no server verification), the
+# literal string ``"system"`` (a synonym of ``True``, kept from when the OS
+# store was opt-in), the literal string ``"certifi"`` (the certifi CA bundle,
+# which was the default through 0.7), a path to a CA bundle (PEM or
+# certs-only PKCS#7), or a ready-made SSLContext.
 VerifyTypes = bool | str | Path | ssl.SSLContext
 
 
@@ -60,10 +59,9 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
     :class:`httpx.Client`, an httpx transport, or any library that accepts an
     ``ssl.SSLContext``. *cert* is a PKCS#12 or PEM source (path or bytes; the
     encoding is detected from the content) and *verify* configures server trust
-    exactly like httpx, plus two httpx-pki literals: ``"system"`` for the OS
-    trust store (requires the ``httpx-pki[system]`` extra, unless httpx2 is
-    installed -- truststore comes with it) and ``"certifi"`` to pin the certifi
-    bundle by name.
+    exactly like httpx2 -- ``True``, the default, verifies against the OS trust
+    store -- plus two httpx-pki literals: ``"system"`` (a synonym of ``True``)
+    and ``"certifi"`` (the certifi CA bundle, the default through 0.7).
 
         ctx = build_ssl_context("client.p12", password="secret")
         client = httpx.Client(verify=ctx)
@@ -101,8 +99,8 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     substring of the subject common name or friendly name), ``thumbprint``, a
     ``predicate`` callable, or the ``key_usage`` / ``extended_key_usage`` it
     must assert -- and returns the ``ssl.SSLContext`` presenting it, with
-    server trust configured by *verify* exactly like httpx (plus the literals
-    ``"system"`` for the OS trust store and ``"certifi"`` for the certifi
+    server trust configured by *verify* exactly like httpx2 (``True``, the
+    default, is the OS trust store; the literal ``"certifi"`` pins the certifi
     bundle).
 
     Use it to mount a store certificate on a transport or a routing layer
@@ -149,8 +147,8 @@ def build_macos_ssl_context(  # pylint: disable=too-many-arguments
     ``thumbprint``, a ``predicate`` callable, or the ``key_usage`` /
     ``extended_key_usage`` it must assert -- and returns the
     ``ssl.SSLContext`` presenting it, with server trust configured by *verify*
-    exactly like httpx (plus the literals ``"system"`` for the OS trust store
-    and ``"certifi"`` for the certifi bundle).
+    exactly like httpx2 (``True``, the default, is the OS trust store; the
+    literal ``"certifi"`` pins the certifi bundle).
 
     macOS only; see :meth:`~httpx_pki.PKIClient.from_macos_keychain` for the
     errors raised.
@@ -188,8 +186,9 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
     Every context built here honors the ``SSLKEYLOGFILE`` environment variable
     (TLS session keys are logged to that file, for Wireshark-style handshake
     debugging) -- via :func:`ssl.create_default_context`, or applied manually
-    for the truststore-backed ``"system"`` mode. A caller-supplied context is
-    returned as-is -- key logging on it is the caller's decision.
+    for the truststore-backed OS-store mode (``True`` / ``"system"``). A
+    caller-supplied context is returned as-is -- key logging on it is the
+    caller's decision.
     """
     if isinstance(verify, ssl.SSLContext):
         warnings.warn(
@@ -201,28 +200,22 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
             stacklevel=3,
         )
         return verify
-    if verify is True or verify == "certifi":
-        # The literal "certifi" pins the certifi CA bundle by name. Today it is
-        # a synonym for True; in 0.8 the True default flips to the OS trust
-        # store (matching httpx2's truststore default), and "certifi" is how a
-        # caller keeps this exact behavior across that change. Like "system", a
-        # CA-bundle file named "certifi" can still be selected as
-        # Path("certifi").
-        return ssl.create_default_context(cafile=certifi.where())
-    if verify == "system":
-        # The literal str selects the OS trust store (Windows CryptoAPI, macOS
-        # Security framework, OpenSSL's system CA paths on Linux) -- where
-        # group-policy/MDM-distributed private CAs live, which certifi never
-        # carries. A CA-bundle file that happens to be named "system" can
-        # still be selected as Path("system").
+    if verify is True or verify == "system":
+        # The OS trust store (Windows CryptoAPI, macOS Security framework,
+        # OpenSSL's system CA paths on Linux) -- where group-policy/MDM-
+        # distributed private CAs live, which certifi never carries. The
+        # default since 0.8, matching httpx2's truststore-backed default;
+        # "system" is the pre-0.8 opt-in spelling, kept as a synonym. A
+        # CA-bundle file that happens to be named "system" can still be
+        # selected as Path("system").
         try:
             import truststore
         except ImportError as exc:
             raise ImportError(
-                'verify="system" requires the truststore package; '
-                "install it with: pip install httpx-pki[system] "
-                "(httpx2 depends on truststore, so it is already present "
-                "wherever httpx2 is installed)"
+                "the truststore package is required for verify=True and "
+                'verify="system" (it is a dependency of httpx-pki since 0.8 '
+                "-- a missing truststore means a broken install; reinstall "
+                "httpx-pki)"
             ) from exc
         system_ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         # create_default_context applies SSLKEYLOGFILE itself; truststore's
@@ -231,6 +224,13 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
         if keylog:
             system_ctx.keylog_filename = keylog
         return system_ctx
+    if verify == "certifi":
+        # The literal "certifi" pins the certifi CA bundle by name -- the
+        # default trust through 0.7, for callers who want the bundled public
+        # CAs regardless of what the OS store holds. Like "system", a
+        # CA-bundle file named "certifi" can still be selected as
+        # Path("certifi").
+        return ssl.create_default_context(cafile=certifi.where())
     if verify is False:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False

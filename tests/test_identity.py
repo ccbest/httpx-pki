@@ -276,10 +276,14 @@ async def test_async_client_takes_a_selector(dual_p12: bytes) -> None:
 
 
 def test_build_ssl_context_takes_a_selector(dual_p12: bytes) -> None:
+    import ssl
+
     context = build_ssl_context(
         dual_p12, P12_PASSWORD, key_usage="digital_signature"
     )
-    assert context.get_ca_certs() is not None  # built without raising
+    # Built without raising. (Not get_ca_certs(): the default context is
+    # truststore-backed since 0.8, which does not implement that method.)
+    assert isinstance(context, ssl.SSLContext)
     with pytest.raises(AmbiguousCertificateError):
         build_ssl_context(dual_p12, P12_PASSWORD)
 

@@ -82,66 +82,78 @@ def test_build_ssl_context_mounts_on_plain_httpx_client(
         assert resp.text == "mtls-ok"
 
 
-# -- verify="system" (OS trust store via the optional truststore package) ----
+# -- default trust: the OS store via truststore (verify=True / "system") -----
 
 
-def test_verify_system_returns_truststore_context(client_p12: bytes) -> None:
-    truststore = pytest.importorskip("truststore")
-    ctx = build_ssl_context(client_p12, password=P12_PASSWORD, verify="system")
-    # The truststore context (with the client cert already loaded) is handed
-    # back directly; PROTOCOL_TLS_CLIENT keeps hostname checking on.
+@pytest.mark.parametrize("verify", [True, "system"])
+def test_default_trust_is_truststore_context(
+    client_p12: bytes, verify: bool | str
+) -> None:
+    # Since 0.8 the OS trust store is the default (matching httpx2), and
+    # "system" remains as a synonym. The truststore context (with the client
+    # cert already loaded) is handed back directly; PROTOCOL_TLS_CLIENT keeps
+    # hostname checking on.
+    import truststore
+
+    ctx = build_ssl_context(client_p12, password=P12_PASSWORD, verify=verify)
     assert isinstance(ctx, truststore.SSLContext)
     assert ctx.check_hostname is True
 
 
-def test_verify_system_without_truststore_raises(
-    client_p12: bytes, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("verify", [True, "system"])
+def test_default_trust_without_truststore_raises(
+    client_p12: bytes, monkeypatch: pytest.MonkeyPatch, verify: bool | str
 ) -> None:
     # A None entry in sys.modules makes `import truststore` raise ImportError,
-    # simulating an environment without the [system] extra.
+    # simulating a broken install (truststore is a hard dependency since 0.8).
     monkeypatch.setitem(sys.modules, "truststore", None)
-    with pytest.raises(ImportError, match=r"httpx-pki\[system\]"):
-        build_ssl_context(client_p12, password=P12_PASSWORD, verify="system")
+    with pytest.raises(ImportError, match="truststore package is required"):
+        build_ssl_context(client_p12, password=P12_PASSWORD, verify=verify)
 
 
-def test_verify_system_rejects_private_ca_server(
-    mtls_server: object, client_p12: bytes
+@pytest.mark.parametrize("verify", [True, "system"])
+def test_default_trust_rejects_private_ca_server(
+    mtls_server: object, client_p12: bytes, verify: bool | str
 ) -> None:
     # The test server's certificate is signed by the throwaway test CA, which
     # no OS trusts -- so a failed handshake proves the OS trust store (not
     # certifi, not the test CA bundle) is really making the decision. The
     # verification-failure message wording varies by platform verifier, so
     # only the error type is asserted.
-    pytest.importorskip("truststore")
     server = mtls_server
-    with PKIClient(client_p12, password=P12_PASSWORD, verify="system") as session:
+    with PKIClient(client_p12, password=P12_PASSWORD, verify=verify) as session:
         with pytest.raises(httpx.ConnectError):
             session.get(server.url)  # type: ignore[attr-defined]
 
 
-def test_verify_system_honors_sslkeylogfile(
-    client_p12: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("verify", [True, "system"])
+def test_default_trust_honors_sslkeylogfile(
+    client_p12: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    verify: bool | str,
 ) -> None:
-    # create_default_context applies SSLKEYLOGFILE itself; the "system" branch
-    # applies it manually so key-logging behavior stays uniform.
-    pytest.importorskip("truststore")
+    # create_default_context applies SSLKEYLOGFILE itself; the truststore
+    # branch applies it manually so key-logging behavior stays uniform.
     keylog = tmp_path / "keys.log"
     monkeypatch.setenv("SSLKEYLOGFILE", str(keylog))
-    ctx = build_ssl_context(client_p12, password=P12_PASSWORD, verify="system")
+    ctx = build_ssl_context(client_p12, password=P12_PASSWORD, verify=verify)
     assert ctx.keylog_filename == str(keylog)
 
 
 # -- verify="certifi" (pin the certifi bundle by name) -----------------------
 
 
-def test_verify_certifi_matches_default_trust(client_p12: bytes) -> None:
-    # "certifi" pins today's verify=True behavior by name -- the escape hatch
-    # for when 0.8 flips the True default to the OS trust store.
-    default = build_ssl_context(client_p12, password=P12_PASSWORD)
+def test_verify_certifi_loads_certifi_bundle(client_p12: bytes) -> None:
+    # "certifi" pins the certifi CA bundle by name -- the pre-0.8 default,
+    # for callers who want the bundled public CAs rather than the OS store.
+    import certifi
+    import truststore
+
     pinned = build_ssl_context(client_p12, password=P12_PASSWORD, verify="certifi")
     assert isinstance(pinned, ssl.SSLContext)
+    assert not isinstance(pinned, truststore.SSLContext)
     assert pinned.check_hostname is True
-    assert pinned.cert_store_stats() == default.cert_store_stats()
+    reference = ssl.create_default_context(cafile=certifi.where())
+    assert pinned.cert_store_stats() == reference.cert_store_stats()
 
 
 def test_verify_certifi_rejects_private_ca_server(

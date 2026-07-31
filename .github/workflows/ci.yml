@@ -27,6 +27,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+      # The dev extra installs httpx alongside the required httpx2; the
+      # resolver must still pick httpx2.
+      - name: Assert resolved backend
+        run: |
+          python -c "import httpx_pki, sys; sys.exit(httpx_pki.HTTP_BACKEND != 'httpx2')"
       # Lint/type-checks are platform-independent; run them once on Linux.
       - name: Ruff
         if: runner.os == 'Linux'
@@ -58,19 +63,19 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
-  # The httpx2 backend legs. The main matrix runs on httpx (the required
-  # dependency); these two legs cover the other environments the resolver in
-  # httpx_pki/_compat.py can land in: httpx2 alongside httpx (httpx2 wins by
-  # preference) and httpx2 alone (the fallback import path never fires).
-  # Ubuntu-only at the Python bounds -- the backend resolution is platform-
-  # independent, and the platform-store code paths are covered above.
-  test-httpx2:
+  # The httpx fallback leg. The main matrix runs on httpx2 (the required
+  # dependency; the dev extra also installs httpx, exercising the
+  # both-installed preference). This leg covers the remaining environment the
+  # resolver in httpx_pki/_compat.py can land in: the original httpx alone,
+  # via the fallback import path. Ubuntu-only at the Python bounds -- the
+  # backend resolution is platform-independent, and the platform-store code
+  # paths are covered above.
+  test-httpx-fallback:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.14"]
-        backend-env: [with-httpx, httpx2-only]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -79,15 +84,16 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,httpx2]"
+          pip install -e ".[dev]"
       # pip cannot install a package whose required dependency is absent, so
-      # the httpx2-only environment is made by uninstalling httpx afterwards.
-      # `pip check` would now flag the environment; the tests are the point.
-      - name: Remove httpx
-        if: matrix.backend-env == 'httpx2-only'
-        run: pip uninstall -y httpx
+      # the httpx-only environment is made by uninstalling httpx2 afterwards
+      # (truststore stays -- it is its own dependency, and verify=True needs
+      # it). `pip check` would now flag the environment; the tests are the
+      # point.
+      - name: Remove httpx2
+        run: pip uninstall -y httpx2
       - name: Assert resolved backend
         run: |
-          python -c "import httpx_pki, sys; sys.exit(httpx_pki.HTTP_BACKEND != 'httpx2')"
+          python -c "import httpx_pki, sys; sys.exit(httpx_pki.HTTP_BACKEND != 'httpx')"
       - name: Pytest
         run: pytest -q --no-cov

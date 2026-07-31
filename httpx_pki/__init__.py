@@ -1,4 +1,4 @@
-"""httpx-pki: PKCS#12 client-certificate (mTLS) sessions for httpx."""
+"""httpx-pki: PKCS#12 client-certificate (mTLS) sessions for httpx2 and httpx."""
 
 from __future__ import annotations
 
@@ -65,4 +65,4 @@ __all__ = [
     "MacCert",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

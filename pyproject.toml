@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "httpx-pki"
-description = "PKCS#12 client-certificate (mTLS) sessions for httpx"
+description = "PKCS#12 client-certificate (mTLS) sessions for httpx2 and httpx"
 dynamic = ["version"]
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Carl Best" }]
-keywords = ["httpx", "pkcs12", "pki", "mtls", "ssl", "client-certificate"]
+keywords = ["httpx2", "httpx", "pkcs12", "pki", "mtls", "ssl", "client-certificate"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -26,29 +26,38 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "httpx>=0.28",
+    "httpx2>=2.9",
     "cryptography>=44",
+    # certifi backs verify="certifi"; truststore backs the verify=True default
+    # (the OS trust store). truststore also arrives transitively with httpx2,
+    # but httpx-pki calls it directly, so it is declared directly.
     "certifi",
+    "truststore>=0.10",
 ]
 
 [project.optional-dependencies]
+# There is deliberately no [httpx] extra for the original-httpx fallback:
+# extras are additive, so it could not remove httpx2 or switch the backend --
+# it would only mislead. The fallback recipe is having httpx>=0.28 installed
+# with httpx2 absent (or HTTPX_PKI_BACKEND=httpx set); anyone on it already
+# depends on httpx themselves. dev carries httpx for the CI fallback leg.
+# No-op since 0.8 (truststore and httpx2 are required dependencies now); kept
+# so existing `pip install httpx-pki[system]` / `[httpx2]` invocations from
+# the 0.5-0.7 docs keep working.
 system = [
     "truststore>=0.10",
 ]
-# The httpx2 backend (preferred over httpx when importable). Package metadata
-# cannot express "httpx OR httpx2", so httpx stays a required dependency for
-# 0.7; 0.8 swaps the two.
 httpx2 = [
     "httpx2>=2.9",
 ]
 dev = [
+    "httpx>=0.28",
     "mypy>=1.11",
     "pylint>=4",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5",
     "ruff>=0.6",
-    "truststore>=0.10",
 ]
 
 [project.urls]

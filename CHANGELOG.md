@@ -4,6 +4,30 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
+## 0.8.0 — Unreleased
+
+- **httpx2 is now the required dependency**, completing the shift 0.7 started.
+  `PKIClient` / `AsyncPKIClient` subclass `httpx2.Client` / `httpx2.AsyncClient`
+  by default. The original httpx remains fully supported as a fallback: with
+  `httpx>=0.28` installed, httpx-pki binds to httpx whenever httpx2 is absent,
+  exactly as before, and `HTTPX_PKI_BACKEND` (`httpx` or `httpx2`) forces the
+  choice when both are installed. `httpx_pki.HTTP_BACKEND` still reports the
+  resolution. There is deliberately no `[httpx]` extra: extras are additive,
+  so installing one could never remove httpx2 or switch the backend by itself
+  — and the fallback audience already depends on httpx directly.
+- **Behavior change: `verify=True` now verifies servers against the OS trust
+  store** (Windows CryptoAPI / macOS Security framework / OpenSSL's system CA
+  paths on Linux) instead of the certifi bundle, matching httpx2's
+  truststore-backed default. Corporate/private CAs distributed through the OS
+  now verify out of the box. `verify="system"` remains as a synonym of `True`;
+  `verify="certifi"` (added in 0.7) pins the certifi bundle for callers who
+  want the old behavior. `SSLKEYLOGFILE` is honored by every context either
+  way.
+- **truststore is now a direct required dependency** (it also arrives
+  transitively with httpx2, but httpx-pki calls it directly). The `[system]`
+  and `[httpx2]` extras still install but are no-ops; they are kept so
+  invocations from the 0.5–0.7 docs keep working.
+
 ## 0.7.0 — 2026-07-31
 
 - **httpx2 support.** httpx development continues under pydantic's stewardship

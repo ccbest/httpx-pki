@@ -7,8 +7,9 @@
 [![License: MIT](https://img.shields.io/pypi/l/httpx-pki)](https://github.com/ccbest/httpx-pki/blob/main/LICENSE)
 [![Checked with mypy](https://img.shields.io/badge/mypy-checked-2a6db2)](https://mypy-lang.org/)
 
-PKCS#12 client-certificate (mTLS) sessions for [httpx](https://www.python-httpx.org/)
-and [httpx2](https://github.com/pydantic/httpx2).
+PKCS#12 client-certificate (mTLS) sessions for
+[httpx2](https://github.com/pydantic/httpx2) and
+[httpx](https://www.python-httpx.org/).
 
 `httpx-pki` gives you an `httpx.Client` (and `httpx.AsyncClient`) subclass with a
 client certificate already mounted, so mutual-TLS endpoints "just work":
@@ -23,9 +24,9 @@ with PKIClient("client.p12", password="secret") as client:
 
 #### Purpose
 
-httpx deprecated its `cert=` argument in 0.28 in favor of building an
-`ssl.SSLContext` yourself — which stdlib `ssl` can't do from PKCS#12 or in-memory
-bytes. `httpx-pki` is that missing piece.
+httpx deprecated its `cert=` argument in 0.28 — a design httpx2 keeps — in
+favor of building an `ssl.SSLContext` yourself, which stdlib `ssl` can't do
+from PKCS#12 or in-memory bytes. `httpx-pki` is that missing piece.
 
 ## Install
 
@@ -33,11 +34,10 @@ bytes. `httpx-pki` is that missing piece.
 pip install httpx-pki
 ```
 
-Requires Python 3.10+, `httpx>=0.28`, and `cryptography>=44`. To verify servers
-against the OS trust store (`verify="system"`, for corporate/private CAs),
-install the extra: `pip install httpx-pki[system]`.
+Requires Python 3.10+, `httpx2>=2.9`, and `cryptography>=44` (`truststore` and
+`certifi`, which back server verification, come along as dependencies).
 
-### httpx or httpx2?
+### httpx2 or httpx?
 
 Both. httpx development continues under pydantic's stewardship as
 [httpx2](https://github.com/pydantic/httpx2), and `httpx-pki` works with either:
@@ -49,17 +49,27 @@ your environment as a transitive dependency of something else but your code
 still expects `PKIClient` to subclass `httpx.Client`. Install the httpx2
 backend with `pip install httpx-pki[httpx2]`.
 
+In the upcoming 0.8 release, [httpx2](https://github.com/pydantic/httpx2) — httpx's continuation
+under pydantic's stewardship — will become the required dependency, and the session
+classes will subclass `httpx2.Client` / `httpx2.AsyncClient`. The original httpx
+will remain fully supported as a fallback: with `httpx>=0.28` installed,
+`httpx-pki` binds to httpx whenever httpx2 is absent, and setting
+`HTTPX_PKI_BACKEND=httpx` in the environment forces it even when httpx2 is
+installed — the escape hatch for code that expects `PKIClient` to subclass
+the original `httpx.Client`. `httpx_pki.HTTP_BACKEND` reports which backend was 
+resolved.
+
+In 0.8, the `verify=True` default will move from certifi to the OS
+trust store (see [Server trust](#server-trust-verify)); pass `verify="certifi"`
+to keep the old bundle. The `[system]` and `[httpx2]` extras still install but
+are no-ops — truststore and httpx2 are required dependencies now.
+
 One caveat with both packages installed: `isinstance(client, httpx.Client)`
 against the *original* httpx is False once the sessions subclass httpx2. Either
 force the backend as above, or migrate the check (calling
 [`httpx2.alias_httpx()`](https://github.com/pydantic/httpx2) in your application
 makes `import httpx` resolve to httpx2 everywhere, which keeps such checks
 consistent).
-
-`httpx-pki` 0.8 will complete the shift: httpx2 becomes the required dependency
-(httpx remains supported as a fallback), and the `verify=True` default moves
-from certifi to the OS trust store, matching httpx2. Pass `verify="certifi"`
-today to pin the certifi bundle across that change.
 
 ## Supported formats
 
@@ -401,11 +411,11 @@ PKIClient("client.p12", base_url="https://api.example.com",
 ### Server trust (`verify`)
 
 Mounting *your* client certificate and verifying the *server's* certificate are
-independent. `verify` behaves just like httpx — `True` (default, uses certifi),
-`False` to disable (with a warning), a path to a CA bundle, or a ready-made
-`ssl.SSLContext` — plus two httpx-pki extras: the literal `"system"` for the
-operating-system trust store, and the literal `"certifi"` to pin the certifi
-bundle by name:
+independent. `verify` behaves just like httpx2 — `True` (default, the
+operating-system trust store), `False` to disable (with a warning), a path to
+a CA bundle, or a ready-made `ssl.SSLContext` — plus two httpx-pki literals:
+`"system"` (a synonym of `True`, kept from when the OS store was opt-in) and
+`"certifi"` to pin the certifi CA bundle by name:
 
 ```python
 PKIClient("client.p12", verify="/etc/ssl/custom-ca.pem")
@@ -415,40 +425,33 @@ The CA-bundle path may be PEM or a certs-only **PKCS#7** bundle (`.p7b`, DER or
 PEM) — handy when the private CA was exported from a Windows CA, which OpenSSL
 itself can't read as a `cafile`.
 
-#### Corporate / private CAs: `verify="system"`
+#### The default: the OS trust store
 
-If the server's certificate chains to a private CA distributed through your OS
-(group policy, MDM, a TLS-inspecting proxy), certifi has never heard of it —
-that's the classic `CERTIFICATE_VERIFY_FAILED: unable to get local issuer
-certificate` right after your client certificate loaded fine. `verify="system"`
-verifies the server against the **operating-system trust store** instead
-(Windows CryptoAPI / macOS Security framework / OpenSSL's system CA paths on
-Linux), via the same [truststore](https://truststore.readthedocs.io/) machinery
-pip uses by default:
+Since 0.8, `verify=True` verifies the server against the **operating-system
+trust store** (Windows CryptoAPI / macOS Security framework / OpenSSL's system
+CA paths on Linux), via the same
+[truststore](https://truststore.readthedocs.io/) machinery httpx2 and pip use
+by default. That's where private CAs distributed through your OS live (group
+policy, MDM, a TLS-inspecting proxy) — the ones behind the classic
+`CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate` right
+after your client certificate loaded fine, which certifi has never heard of.
+`verify="system"` remains as an explicit synonym from when the OS store was
+opt-in; both spellings survive pickling, unlike a custom `ssl.SSLContext`.
+(A CA-bundle *file* literally named `system` can still be passed as
+`Path("system")`.)
 
-```bash
-pip install httpx-pki[system]
-```
+#### Pinning certifi: `verify="certifi"`
 
-```python
-PKIClient("client.p12", password="secret", verify="system")
-```
-
-Works with every constructor and `build_ssl_context`; `HTTPX_PKI_CA=system`
-selects it for `from_env`. Unlike a custom `ssl.SSLContext`, it survives
-pickling. It is never chosen implicitly — `verify=True` means certifi in 0.7,
-even when truststore is installed. (A CA-bundle *file* literally named `system`
-can still be passed as `Path("system")`.) The `[system]` extra is unnecessary
-when httpx2 is installed — truststore is one of its dependencies.
-
-In 0.8 the `verify=True` default flips to the OS trust store, matching httpx2
-(whose default verification is truststore-backed). `verify="certifi"` pins the
-certifi bundle by name — a synonym for today's `True` that keeps exactly this
-behavior across the change:
+The certifi bundle — the default through 0.7, and still what the original
+httpx uses for `verify=True` — remains available by name, for callers who want
+exactly the bundled public CAs regardless of what the OS store holds:
 
 ```python
 PKIClient("client.p12", password="secret", verify="certifi")
 ```
+
+Works with every constructor and `build_ssl_context`; `HTTPX_PKI_CA=certifi`
+(or `system`) selects the corresponding trust for `from_env`.
 
 > **Passing your own `ssl.SSLContext`?** `httpx-pki` loads the client certificate
 > into that exact object (it can't be copied), so don't reuse a shared context
