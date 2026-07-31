@@ -47,6 +47,14 @@ the git history for the fine print.
   select on anything a certificate holds — including skipping the expired copy
   a store keeps after a renewal. One predicate now reads the same across
   PKCS#12 files, the Windows store, and the keychain.
+- **Bug fix:** a Windows export refused because the private key is not
+  exportable now says so, and says how to fix it. `ctypes.get_last_error()`
+  returns a *signed* int, so `NTE_BAD_KEY_STATE` (`0x8009000B`) arrived as
+  `-0x7ff6fff5` and never matched the known non-exportable codes — the message
+  fell through to the unhelpful "PFX export failed (Windows error
+  -0x7ff6fff5)". The codes are compared unsigned now, the set also covers the
+  CNG `NTE_NOT_SUPPORTED`, and the message names the re-import flags that mark
+  a key exportable (plus the TPM/smart-card case, where no flag will help).
 - **Behavior change:** store selectors now **intersect** instead of overriding.
   Passing `name=` together with `thumbprint=` used to silently ignore the name
   (the documented "order of specificity"); now every selector given must match,

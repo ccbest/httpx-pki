@@ -29,6 +29,14 @@ from ._select import UsageSelector, _CertDetails, select_certificate
 
 Predicate = Callable[["WinCert"], bool]
 
+# The crypt32 errors that mean "this key may not leave the store", as opposed to
+# a genuine export failure: NTE_BAD_KEY, NTE_BAD_FLAGS, NTE_BAD_KEY_STATE (the
+# usual one for a key imported without the exportable flag), and
+# NTE_NOT_SUPPORTED (its CNG counterpart).
+_NON_EXPORTABLE_ERRORS = frozenset(
+    {0x80090003, 0x80090009, 0x8009000B, 0x80090029}
+)
+
 
 @dataclass(frozen=True)
 class WinCert(_CertDetails):
@@ -252,7 +260,7 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
     if not h_store:
         raise CertificateLoadError(
             f"could not open certificate store {store!r}: "
-            f"error {ctypes.get_last_error()}"
+            f"error {ctypes.get_last_error() & 0xFFFFFFFF:#010x}"
         )
 
     # PCCERT_CONTEXT points at this; pbCertEncoded/cbCertEncoded are the DER we
@@ -401,7 +409,6 @@ def _export_pfx(cert: WinCert) -> tuple[bytes, bytes]:  # pragma: no cover
     CERT_STORE_ADD_ALWAYS = 4
     EXPORT_PRIVATE_KEYS = 0x0004
     REPORT_NOT_ABLE_TO_EXPORT_PRIVATE_KEY = 0x0002
-    NON_EXPORTABLE_ERRORS = {0x80090003, 0x8009000B, 0x80090009}
 
     class CRYPT_DATA_BLOB(ctypes.Structure):
         _fields_ = [
@@ -431,12 +438,12 @@ def _export_pfx(cert: WinCert) -> tuple[bytes, bytes]:  # pragma: no cover
             )
 
         if not _export():
-            _raise_export_error(ctypes.get_last_error(), NON_EXPORTABLE_ERRORS)
+            _raise_export_error(ctypes.get_last_error())
 
         buf = (ctypes.c_byte * blob.cbData)()
         blob.pbData = ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte))
         if not _export():
-            _raise_export_error(ctypes.get_last_error(), NON_EXPORTABLE_ERRORS)
+            _raise_export_error(ctypes.get_last_error())
 
         pfx_bytes = ctypes.string_at(blob.pbData, blob.cbData)
     finally:
@@ -447,12 +454,24 @@ def _export_pfx(cert: WinCert) -> tuple[bytes, bytes]:  # pragma: no cover
     return pfx_bytes, password.encode("utf-8")
 
 
-def _raise_export_error(
-    code: int, non_exportable: set[int]
-) -> None:  # pragma: no cover
-    if code in non_exportable:
+def _raise_export_error(code: int) -> None:
+    """Turn a failed PFX export into an error that says what to do about it.
+
+    Not marked platform-only: the mapping is pure, and it is the one piece of
+    the export path that can be tested off Windows.
+    """
+    # ctypes.get_last_error() hands back a *signed* int, so every NTE_* HRESULT
+    # (high bit set) arrives negative -- 0x8009000B reads as -0x7ff6fff5 and
+    # matches nothing. Normalize before comparing or formatting.
+    code &= 0xFFFFFFFF
+    if code in _NON_EXPORTABLE_ERRORS:
         raise CertificateLoadError(
-            "the certificate's private key is not exportable "
-            f"(Windows error {code:#010x})"
+            "the certificate's private key is not exportable, so Windows "
+            f"refused to export it (error {code:#010x}). A key can only be "
+            "exported if it was marked exportable when it was imported -- "
+            "re-import with `Import-PfxCertificate -Exportable`, or tick "
+            '"Mark this key as exportable" in the certificate import wizard. '
+            "A key held in a TPM or a smart card cannot be exported at all; "
+            "use from_key_pair with a certificate and key file instead."
         )
     raise CertificateLoadError(f"PFX export failed (Windows error {code:#010x})")

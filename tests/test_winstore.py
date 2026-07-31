@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives import serialization
 import httpx_pki._winstore as winstore
 from httpx_pki import (
     AmbiguousCertificateError,
+    CertificateLoadError,
     CertificateNotFoundError,
     PKIClient,
     UnsupportedPlatformError,
@@ -594,3 +595,36 @@ def test_real_store_build_ssl_context(store_identities: StoreFixture) -> None:
         name=WINSTORE_CN, key_usage="digital_signature"
     )
     assert context is not None
+
+
+# -- export error mapping (all platforms; the mapping is pure) ----------------
+
+
+def test_non_exportable_error_is_named_even_when_signed() -> None:
+    # ctypes.get_last_error() returns a signed int, so NTE_BAD_KEY_STATE
+    # (0x8009000B) arrives as -0x7ff6fff5. It must still be recognized as
+    # "not exportable" rather than falling through to the generic message.
+    with pytest.raises(CertificateLoadError) as exc:
+        winstore._raise_export_error(-0x7FF6FFF5)
+    message = str(exc.value)
+    assert "not exportable" in message
+    assert "Import-PfxCertificate -Exportable" in message
+    assert "0x8009000b" in message.lower()
+
+
+@pytest.mark.parametrize("code", sorted(winstore._NON_EXPORTABLE_ERRORS))
+def test_every_non_exportable_code_is_named(code: int) -> None:
+    # Each one, in both the unsigned and the signed spelling Windows may hand
+    # back, since the sign depends on how the value reaches us.
+    for value in (code, code - 0x100000000):
+        with pytest.raises(CertificateLoadError, match="not exportable"):
+            winstore._raise_export_error(value)
+
+
+def test_other_export_failures_keep_the_generic_message() -> None:
+    with pytest.raises(CertificateLoadError) as exc:
+        winstore._raise_export_error(0x00000005)  # ERROR_ACCESS_DENIED
+    message = str(exc.value)
+    assert "PFX export failed" in message
+    assert "0x00000005" in message
+    assert "not exportable" not in message
