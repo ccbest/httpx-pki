@@ -218,23 +218,42 @@ with PKIClient.from_windows_cert_store(name="ACME Client") as client:
 ```
 
 If several certificates match you'll get an `AmbiguousCertificateError` listing
-the candidates; narrow it with an exact thumbprint or a predicate:
+the candidates with their key usages and expiry; narrow it with any combination
+of selectors — **every one you pass must match**:
 
 ```python
 PKIClient.from_windows_cert_store(thumbprint="A1:B2:C3:...")
 PKIClient.from_windows_cert_store(predicate=lambda c: c.friendly_name == "prod")
 PKIClient.from_windows_cert_store(name="ACME", location="LocalMachine")
+
+# A dual key pair — what AD key archival provisions — puts both halves in the
+# store under one subject. The key usage is what separates them:
+PKIClient.from_windows_cert_store(name="ACME", key_usage="digital_signature")
+PKIClient.from_windows_cert_store(name="ACME", extended_key_usage="client_auth")
 ```
 
 To see what's in the store before selecting, `list_windows_certificates()`
-returns a `WinCert` (subject CN, friendly name, thumbprint) for each certificate
-— metadata only, no key is exported:
+returns a `WinCert` for each certificate — metadata only, no key is exported:
 
 ```python
 from httpx_pki import list_windows_certificates
 
 for c in list_windows_certificates():        # location="LocalMachine" for the machine store
-    print(c.friendly_name, c.subject_cn, c.thumbprint)
+    print(c.friendly_name, c.subject_cn, c.thumbprint, sorted(c.key_usage))
+```
+
+Each `WinCert` also carries the parsed `certificate` and its `info`
+(a [`CertInfo`](#inspecting-the-certificate)), so a predicate can select on
+anything a certificate holds — including skipping the expired copy a store
+tends to keep after a renewal:
+
+```python
+from datetime import datetime, timezone
+
+now = datetime.now(timezone.utc)
+PKIClient.from_windows_cert_store(
+    name="ACME", predicate=lambda c: c.info is not None and c.info.not_after > now
+)
 ```
 
 Notes:
@@ -261,15 +280,20 @@ with PKIClient.from_macos_keychain(name="ACME Client") as client:
 ```
 
 Selection works exactly like the Windows store — `AmbiguousCertificateError`
-lists the candidates; narrow with an exact thumbprint or a predicate:
+lists the candidates, and every selector you pass must match:
 
 ```python
 PKIClient.from_macos_keychain(thumbprint="A1:B2:C3:...")
 PKIClient.from_macos_keychain(predicate=lambda c: c.label == "prod")
+
+# Both halves of a dual key pair in one keychain, told apart by usage:
+PKIClient.from_macos_keychain(name="ACME", key_usage="digital_signature")
+PKIClient.from_macos_keychain(name="ACME", extended_key_usage="email_protection")
 ```
 
-`list_macos_certificates()` returns a `MacCert` (subject CN, keychain label,
-SHA-1 thumbprint) per identity — metadata only, no key is exported — and
+`list_macos_certificates()` returns a `MacCert` per identity — subject CN,
+keychain label, SHA-1 thumbprint, plus the parsed `certificate`, its `info`,
+and `key_usage` / `extended_key_usage`; metadata only, no key is exported.
 `build_macos_ssl_context(...)` is the session-less seam, mirroring
 `build_windows_ssl_context`.
 

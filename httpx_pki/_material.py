@@ -27,7 +27,8 @@ from cryptography.x509.oid import ExtendedKeyUsageOID
 from ._exceptions import CertificateLoadError
 
 if TYPE_CHECKING:  # imported for typing only -- see parse_pkcs12
-    from ._pkcs12 import IdentitySelector, UsageSelector
+    from ._pkcs12 import IdentitySelector
+    from ._select import UsageSelector
 
 # A source of bytes: either the raw bytes themselves, or a filesystem path
 # (``str`` or :class:`pathlib.Path`) to read them from.

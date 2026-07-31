@@ -30,7 +30,7 @@ identity -- exactly the behavior of earlier releases.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 from cryptography import x509
@@ -44,8 +44,6 @@ from ._exceptions import (
     CertificateNotFoundError,
 )
 from ._material import (
-    _EKU_NAMES,
-    KEY_USAGE_NAMES,
     CertInfo,
     CertSource,
     Material,
@@ -56,11 +54,16 @@ from ._material import (
     encode_password,
     read_source,
 )
-from ._select import normalize_thumbprint
+from ._select import (
+    UsageSelector,
+    _CertDetails,
+    matches_usages,
+    normalize_thumbprint,
+)
 
 
 @dataclass(frozen=True)
-class P12Identity:
+class P12Identity(_CertDetails):
     """One private key and its certificate inside a PKCS#12 bundle.
 
     ``index`` is the identity's position in the file -- ``0`` is the one every
@@ -100,8 +103,6 @@ class P12Identity:
 # case-insensitive substring of the friendly name, common name, or full
 # subject; or an exact SHA-1/SHA-256 fingerprint), or a predicate.
 IdentitySelector = int | str | Callable[[P12Identity], bool]
-# One usage name or several; every named usage must be present to match.
-UsageSelector = str | Iterable[str]
 
 
 @dataclass(frozen=True)
@@ -454,79 +455,6 @@ def list_pkcs12_identities(
 # -- selection --------------------------------------------------------------
 
 
-def _squash(name: str) -> str:
-    """Normalize a usage name: ``keyEncipherment`` == ``key_encipherment``."""
-    return name.lower().replace("_", "").replace("-", "")
-
-
-_KEY_USAGE_BY_SQUASHED = {_squash(name): name for name in KEY_USAGE_NAMES}
-# X.509 renamed the nonRepudiation bit to contentCommitment, and cryptography
-# follows the new name -- but CA documentation, openssl's own output, and the
-# schemes that lean on the bit all still say nonRepudiation, so accept both.
-_KEY_USAGE_BY_SQUASHED[_squash("non_repudiation")] = "content_commitment"
-_EKU_BY_SQUASHED = {_squash(name): name for name in _EKU_NAMES.values()}
-
-
-def _as_names(value: UsageSelector, what: str) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    try:
-        names = list(value)
-    except TypeError as exc:
-        raise TypeError(
-            f"{what} must be a string or an iterable of strings, got "
-            f"{type(value).__name__}"
-        ) from exc
-    if not names:
-        raise ValueError(f"{what} must name at least one usage")
-    return names
-
-
-def _normalize_key_usages(value: UsageSelector) -> list[str]:
-    """Canonical KeyUsage attribute names, rejecting anything unknown."""
-    resolved = []
-    for name in _as_names(value, "key_usage"):
-        canonical = _KEY_USAGE_BY_SQUASHED.get(_squash(name))
-        if canonical is None:
-            raise ValueError(
-                f"unknown key usage {name!r}; valid usages are "
-                + ", ".join(KEY_USAGE_NAMES)
-            )
-        resolved.append(canonical)
-    return resolved
-
-
-def _normalize_extended_key_usages(value: UsageSelector) -> list[str]:
-    """Canonical extended key usage names; dotted OIDs are accepted as-is."""
-    resolved = []
-    for name in _as_names(value, "extended_key_usage"):
-        canonical = _EKU_BY_SQUASHED.get(_squash(name))
-        if canonical is None and _looks_like_oid(name):
-            # Name it if cryptography knows it, so it compares equal to what
-            # CertInfo reports; otherwise keep the dotted form.
-            canonical = _EKU_NAMES.get(x509.ObjectIdentifier(name), name)
-        if canonical is None:
-            raise ValueError(
-                f"unknown extended key usage {name!r}; pass a dotted OID or "
-                "one of " + ", ".join(sorted(_EKU_BY_SQUASHED.values()))
-            )
-        resolved.append(canonical)
-    return resolved
-
-
-def _eku_object_identifier(name: str) -> x509.ObjectIdentifier:
-    """The OID behind a canonical extended key usage name or dotted OID."""
-    for oid, known in _EKU_NAMES.items():
-        if known == name:
-            return oid
-    return x509.ObjectIdentifier(name)
-
-
-def _looks_like_oid(value: str) -> bool:
-    parts = value.split(".")
-    return len(parts) > 2 and all(part.isdigit() for part in parts)
-
-
 def _matches_name(identity: P12Identity, needle: str) -> bool:
     """Fingerprint equality for a hex digest, else a case-insensitive substring."""
     target = normalize_thumbprint(needle)
@@ -572,18 +500,15 @@ def select_identity(
         described.append(f"identity={identity!r}")
         matches = _apply_identity_selector(matches, identity, len(identities))
     if key_usage is not None:
-        wanted = _normalize_key_usages(key_usage)
         described.append(f"key_usage={key_usage!r}")
-        matches = [
-            i for i in matches if all(u in i.info.key_usage for u in wanted)
-        ]
     if extended_key_usage is not None:
-        wanted = _normalize_extended_key_usages(extended_key_usage)
         described.append(f"extended_key_usage={extended_key_usage!r}")
+    if key_usage is not None or extended_key_usage is not None:
+        # Shared with the platform stores so the two never drift; it also
+        # validates the names, so a typo raises here rather than matching
+        # nothing.
         matches = [
-            i
-            for i in matches
-            if all(u in i.info.extended_key_usage for u in wanted)
+            i for i in matches if matches_usages(i, key_usage, extended_key_usage)
         ]
 
     selector = " + ".join(described)
@@ -649,6 +574,27 @@ def _listing(identities: list[P12Identity]) -> str:
 
 
 # -- material ---------------------------------------------------------------
+
+
+def material_from_store_export(
+    data: bytes, password: bytes | None, thumbprint: str
+) -> Material:
+    """Material for the certificate a platform store just exported.
+
+    The export holds the one identity we selected, so pinning its thumbprint is
+    normally a formality -- but it keeps a store that exports more than we asked
+    for from tripping the ambiguity guard, which the caller could do nothing
+    about.
+
+    If the pin matches nothing, the export didn't contain the certificate we
+    picked. No platform should do that, and guessing is better than failing on a
+    selector the caller never wrote: fall back to the unpinned load so the real
+    problem surfaces as itself.
+    """
+    try:
+        return pkcs12_material(data, password, identity=thumbprint)
+    except CertificateNotFoundError:
+        return pkcs12_material(data, password)
 
 
 def pkcs12_material(

@@ -36,6 +36,22 @@ the git history for the fine print.
   identity plus a stray chain certificate. Since nothing but the validity
   window distinguishes them, the identity listing in the error message carries
   each certificate's expiry.
+- **The platform stores got the same selectors.**
+  `from_windows_cert_store`, `from_macos_keychain`, and their
+  `build_*_ssl_context` counterparts take `key_usage=` and
+  `extended_key_usage=` — which matters most there, since Active Directory key
+  archival and macOS keychains routinely hold both halves of a dual key pair
+  under one subject, and an exact thumbprint was previously the only way out.
+  `WinCert` and `MacCert` now carry the parsed `certificate`, its `info`
+  (`CertInfo`), and `key_usage` / `extended_key_usage`, so a `predicate=` can
+  select on anything a certificate holds — including skipping the expired copy
+  a store keeps after a renewal. One predicate now reads the same across
+  PKCS#12 files, the Windows store, and the keychain.
+- **Behavior change:** store selectors now **intersect** instead of overriding.
+  Passing `name=` together with `thumbprint=` used to silently ignore the name
+  (the documented "order of specificity"); now every selector given must match,
+  as the PKCS#12 selectors do. Callers passing a single selector are
+  unaffected; callers passing several that agree get the same result as before.
 - `CertInfo` now reports `key_usage` and `extended_key_usage` — the extensions
   that tell the halves of a dual key pair apart — for every certificate, not
   just those inside a PKCS#12 bundle. Usage names are accepted in camelCase as

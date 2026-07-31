@@ -26,6 +26,7 @@ from ._material import (
     parse_pkcs12,
     read_source,
 )
+from ._pkcs12 import material_from_store_export
 
 # One (mtime_ns, size) entry per watched path; None for a path that can't be
 # stat'ed (mid-rotation gap, deleted file). Any change in the tuple means the
@@ -88,13 +89,13 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     if ref.kind == "winstore":
         from ._winstore import load_windows_pkcs12
 
-        pfx, pfx_password = load_windows_pkcs12(**args)
-        return parse_pkcs12(pfx, pfx_password)
+        pfx, pfx_password, chosen = load_windows_pkcs12(**args)
+        return material_from_store_export(pfx, pfx_password, chosen)
     if ref.kind == "macos_keychain":
         from ._keychain import load_macos_pkcs12
 
-        pfx, pfx_password = load_macos_pkcs12(**args)
-        return parse_pkcs12(pfx, pfx_password)
+        pfx, pfx_password, chosen = load_macos_pkcs12(**args)
+        return material_from_store_export(pfx, pfx_password, chosen)
     raise ValueError(f"unknown source kind {ref.kind!r}")
 
 

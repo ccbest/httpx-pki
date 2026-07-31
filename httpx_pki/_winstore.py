@@ -18,42 +18,57 @@ from __future__ import annotations
 import secrets
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from cryptography import x509
+
 from ._exceptions import CertificateLoadError, UnsupportedPlatformError
-from ._select import select_certificate
+from ._material import CertInfo, _load_certificate, certificate_info
+from ._select import UsageSelector, _CertDetails, select_certificate
 
 Predicate = Callable[["WinCert"], bool]
 
 
 @dataclass(frozen=True)
-class WinCert:
+class WinCert(_CertDetails):
     """A certificate discovered in the Windows store.
 
     ``handle`` is the opaque ``PCCERT_CONTEXT`` used to export the key; it is
     ``None`` for the synthetic candidates used in tests.
+
+    ``certificate`` and ``info`` carry the parsed certificate and its summary,
+    which is what makes ``key_usage`` / ``extended_key_usage`` selection (and
+    predicates over validity) possible. Both are ``None`` when the certificate
+    could not be read -- see :func:`_enumerate_store` -- in which case the
+    record still selects by name and thumbprint exactly as before.
     """
 
     subject_cn: str | None
     friendly_name: str | None
     thumbprint: str
     handle: Any = None
+    certificate: x509.Certificate | None = field(default=None, repr=False)
+    info: CertInfo | None = field(default=None, repr=False)
 
 
-def select_windows_certificate(
+def select_windows_certificate(  # pylint: disable=too-many-arguments
     candidates: list[WinCert],
     *,
     name: str | None = None,
     thumbprint: str | None = None,
     predicate: Predicate | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
 ) -> WinCert:
     """Choose a single certificate from *candidates*.
 
-    Selectors are applied in order of specificity: an exact ``thumbprint``, then
-    a ``predicate`` callable, then a case-insensitive ``name`` substring matched
-    against the subject common name and the Windows friendly name. With no
-    selector, all candidates qualify (handy when the store holds exactly one).
+    Every selector given must match: an exact ``thumbprint``, a ``predicate``
+    callable, a case-insensitive ``name`` substring matched against the subject
+    common name and the Windows friendly name, and the ``key_usage`` /
+    ``extended_key_usage`` the certificate must assert -- which is how the two
+    halves of a dual key pair in one store are told apart. With no selector,
+    all candidates qualify (handy when the store holds exactly one).
 
     Raises :class:`CertificateNotFoundError` if nothing matches and
     :class:`AmbiguousCertificateError` if more than one does.
@@ -64,6 +79,8 @@ def select_windows_certificate(
         thumbprint=thumbprint,
         predicate=predicate,
         aliases=lambda c: (c.subject_cn, c.friendly_name),
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
     )
 
 
@@ -91,15 +108,22 @@ def list_windows_certificates(
         _free_contexts(candidates)
 
 
-def load_windows_pkcs12(
+def load_windows_pkcs12(  # pylint: disable=too-many-arguments
     *,
     name: str | None = None,
     thumbprint: str | None = None,
     predicate: Predicate | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
     store: str = "MY",
     location: str = "CurrentUser",
-) -> tuple[bytes, bytes]:
-    """Export the matching store certificate to ``(pkcs12_bytes, password)``."""
+) -> tuple[bytes, bytes, str]:
+    """Export the matching store certificate.
+
+    Returns ``(pkcs12_bytes, password, thumbprint)``; the thumbprint identifies
+    the chosen certificate inside the export, so the caller can pin it when
+    parsing rather than trusting that the blob holds exactly one identity.
+    """
     if sys.platform != "win32":
         raise UnsupportedPlatformError(
             "the Windows certificate store is only available on Windows"
@@ -108,9 +132,16 @@ def load_windows_pkcs12(
     keep: WinCert | None = None
     try:
         keep = select_windows_certificate(
-            candidates, name=name, thumbprint=thumbprint, predicate=predicate
+            candidates,
+            name=name,
+            thumbprint=thumbprint,
+            predicate=predicate,
+            key_usage=key_usage,
+            extended_key_usage=extended_key_usage,
         )
-        return _export_pfx(keep)
+        chosen = keep.thumbprint
+        pfx, password = _export_pfx(keep)
+        return pfx, password, chosen
     finally:
         # _enumerate_store duplicates every context so the handles outlive the
         # enumeration cursor; free the ones we are not exporting (_export_pfx
@@ -189,6 +220,7 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
         )
 
     import ctypes
+    from ctypes import wintypes
 
     crypt32 = _load_crypt32()
 
@@ -223,6 +255,18 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
             f"error {ctypes.get_last_error()}"
         )
 
+    # PCCERT_CONTEXT points at this; pbCertEncoded/cbCertEncoded are the DER we
+    # need for the key usages. Declared once per enumeration rather than per
+    # certificate. (wincrypt.h: CERT_CONTEXT.)
+    class CERT_CONTEXT(ctypes.Structure):  # pylint: disable=missing-class-docstring,too-few-public-methods
+        _fields_ = [
+            ("dwCertEncodingType", wintypes.DWORD),
+            ("pbCertEncoded", ctypes.POINTER(ctypes.c_ubyte)),
+            ("cbCertEncoded", wintypes.DWORD),
+            ("pCertInfo", ctypes.c_void_p),
+            ("hCertStore", ctypes.c_void_p),
+        ]
+
     results: list[WinCert] = []
     try:
         cert_ctx = crypt32.CertEnumCertificatesInStore(h_store, None)
@@ -230,6 +274,10 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
             # Duplicate so the context survives past the enumeration cursor
             # (the next enum call frees the one it just returned).
             dup = crypt32.CertDuplicateCertificateContext(cert_ctx)
+            thumbprint = _thumbprint(crypt32, cert_ctx, CERT_SHA1_HASH_PROP_ID)
+            certificate, info = _certificate_details(
+                cert_ctx, CERT_CONTEXT, thumbprint
+            )
             results.append(
                 WinCert(
                     subject_cn=_name_string(
@@ -238,16 +286,50 @@ def _enumerate_store(store: str, location: str) -> list[WinCert]:  # pragma: no 
                     friendly_name=_friendly_name(
                         crypt32, cert_ctx, CERT_FRIENDLY_NAME_PROP_ID
                     ),
-                    thumbprint=_thumbprint(
-                        crypt32, cert_ctx, CERT_SHA1_HASH_PROP_ID
-                    ),
+                    thumbprint=thumbprint,
                     handle=dup,
+                    certificate=certificate,
+                    info=info,
                 )
             )
             cert_ctx = crypt32.CertEnumCertificatesInStore(h_store, cert_ctx)
     finally:
         crypt32.CertCloseStore(h_store, 0)
     return results
+
+
+def _certificate_details(
+    cert_ctx: Any, context_type: Any, thumbprint: str
+) -> tuple[x509.Certificate | None, CertInfo | None]:  # pragma: no cover
+    """The parsed certificate behind a context, or ``(None, None)``.
+
+    Windows hands out the DER inside the ``CERT_CONTEXT`` structure rather than
+    through a getter, so reading it means trusting a struct layout -- and a
+    wrong offset yields plausible-looking garbage rather than an error. The
+    result is therefore checked against the SHA-1 thumbprint Windows reported
+    through an entirely separate API (``CertGetCertificateContextProperty``):
+    if the bytes we parsed are not the certificate Windows says this is, we
+    misread memory.
+
+    A failure is not fatal. The record keeps working for ``name`` and
+    ``thumbprint`` selection exactly as it did before usages were available;
+    only usage-based selection goes missing, and the candidate listing in a
+    selection error shows no ``key_usage=`` for it, which is the visible clue.
+    """
+    import ctypes
+
+    try:
+        context = ctypes.cast(cert_ctx, ctypes.POINTER(context_type)).contents
+        if not context.pbCertEncoded or not context.cbCertEncoded:
+            return None, None
+        der = ctypes.string_at(context.pbCertEncoded, context.cbCertEncoded)
+        certificate = _load_certificate(der)
+        info = certificate_info(certificate)
+    except (CertificateLoadError, ValueError, OSError):
+        return None, None
+    if thumbprint and info.fingerprint_sha1 != thumbprint:
+        return None, None
+    return certificate, info
 
 
 def _name_string(

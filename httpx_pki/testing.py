@@ -42,10 +42,10 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from ._pkcs12 import (
-    _eku_object_identifier,
-    _normalize_extended_key_usages,
-    _normalize_key_usages,
+from ._select import (
+    eku_object_identifier,
+    normalize_extended_key_usages,
+    normalize_key_usages,
 )
 
 __all__ = ["CertBundle", "make_ca", "make_client_cert", "make_pkcs12"]
@@ -158,7 +158,7 @@ def _key_usage_extension(usages: Iterable[str] | None) -> x509.KeyUsage:
     if usages is None:
         names = ["digital_signature", "key_encipherment"]
     else:
-        names = _normalize_key_usages(usages)
+        names = normalize_key_usages(usages)
     return x509.KeyUsage(
         digital_signature="digital_signature" in names,
         content_commitment="content_commitment" in names,
@@ -238,8 +238,8 @@ def make_client_cert(  # pylint: disable=too-many-arguments,too-many-locals
                 [ExtendedKeyUsageOID.CLIENT_AUTH]
                 if extended_key_usage is None
                 else [
-                    _eku_object_identifier(name)
-                    for name in _normalize_extended_key_usages(extended_key_usage)
+                    eku_object_identifier(name)
+                    for name in normalize_extended_key_usages(extended_key_usage)
                 ]
             ),
             critical=False,
