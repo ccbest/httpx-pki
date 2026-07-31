@@ -4,7 +4,7 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
-## 0.7.0 — Unreleased
+## 0.7.0 — 2026-07-31
 
 - **httpx2 support.** httpx development continues under pydantic's stewardship
   as [httpx2](https://github.com/pydantic/httpx2), and httpx-pki now works with
