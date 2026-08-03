@@ -63,6 +63,30 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  # Read the Docs builds from its own webhook after merge, so nothing else
+  # would catch a broken cross-reference or a malformed docstring until the
+  # docs were already live. This leg runs the same build RTD runs -- same
+  # -W/nitpicky settings via .readthedocs.yaml's fail_on_warning -- on every
+  # PR. autodoc imports httpx_pki, so the package is installed, not just the
+  # docs toolchain.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[docs]"
+      - name: Build (warnings are errors)
+        run: python -m sphinx -b html -W --keep-going docs docs/_build/html
+      - name: Check external links
+        # Informational: an upstream site being down should not redden a PR.
+        continue-on-error: true
+        run: python -m sphinx -b linkcheck docs docs/_build/linkcheck
+
   # The httpx fallback leg. The main matrix runs on httpx2 (the required
   # dependency; the dev extra also installs httpx, exercising the
   # both-installed preference). This leg covers the remaining environment the

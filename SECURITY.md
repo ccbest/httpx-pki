@@ -27,9 +27,11 @@ Reports especially welcome (non-exhaustive):
 - Supply-chain issues with the release pipeline described below.
 
 Already-documented behavior — e.g. that a pickled session contains the
-decrypted private key (see the README's security note) — is not a
+decrypted private key (see the [security notes][sec]) — is not a
 vulnerability by itself, but ways to *exploit* such behavior beyond what is
 documented are in scope.
+
+[sec]: https://httpx-pki.readthedocs.io/en/stable/about/security.html
 
 ## Supported versions
 
@@ -49,8 +51,8 @@ How releases are produced, so you can decide what to trust:
   `__version__` before building, so a release is auditable to one commit.
 - All GitHub Actions used by CI and release workflows are pinned to full
   commit SHAs.
-- Runtime dependencies are limited to `httpx`, `cryptography`, and `certifi`
-  (plus the optional `truststore` extra).
+- Runtime dependencies are limited to `httpx2`, `cryptography`, `truststore`,
+  and `certifi`. There are no optional runtime dependencies.
 
 As a consumer, install with a lockfile that records hashes (uv, poetry, or
 `pip-tools` + `pip install --require-hashes`) — as you would for any

@@ -190,7 +190,7 @@ def make_client_cert(  # pylint: disable=too-many-arguments,too-many-locals
     populate the Subject Alternative Name extension. The validity window
     defaults to (yesterday, +365 days); override it with *not_before*/
     *not_after*, or pass ``expired=True`` for a window that has already closed
-    (handy for exercising :meth:`PKIClient.check_validity`).
+    (handy for exercising :meth:`httpx_pki.PKIClient.check_validity`).
 
     The certificate carries the extensions a real client certificate would:
     a KeyUsage of digitalSignature + keyEncipherment and an ExtendedKeyUsage

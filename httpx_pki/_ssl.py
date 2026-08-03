@@ -106,7 +106,8 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     Use it to mount a store certificate on a transport or a routing layer
     without building a whole :class:`~httpx_pki.PKIClient` just to read its
     ``ssl_context``. Windows only; see
-    :meth:`~httpx_pki.PKIClient.from_windows_cert_store` for the errors raised.
+    :meth:`~httpx_pki.PKIClient.from_windows_cert_store` for the errors
+    raised::
 
         ctx = build_windows_ssl_context(
             predicate=lambda c: "Internal" in (c.friendly_name or "")
