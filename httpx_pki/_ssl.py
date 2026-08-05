@@ -57,7 +57,7 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
     A convenience for callers who want the SSL context without the
     :class:`~httpx_pki.PKIClient` wrapper -- to mount on a plain
     :class:`httpx.Client`, an httpx transport, or any library that accepts an
-    ``ssl.SSLContext``. *cert* is a PKCS#12 or PEM source (path or bytes; the
+    ``ssl.SSLContext``. *source* is a PKCS#12 or PEM source (path or bytes; the
     encoding is detected from the content) and *verify* configures server trust
     exactly like httpx2 -- ``True``, the default, verifies against the OS trust
     store -- plus two httpx-pki literals: ``"system"`` (a synonym of ``True``)

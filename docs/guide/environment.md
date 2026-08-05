@@ -96,9 +96,11 @@ $ export HTTPX_PKI_EXT_KEY_USAGE=client_auth       # by extended key usage
 {py:func}`~httpx_pki.currently_valid` selector.
 
 :::{note}
-`currently_valid` is a *filter*, not a tiebreaker. It discards identities
-outside their validity window; if two remain valid it is still ambiguous.
-Combine it with a usage variable, or use a more specific selector.
+`currently_valid` discards identities outside their validity window. During a
+renewal *overlap*, when old and new are both valid, it resolves to the later
+window — but only between certificates that are otherwise interchangeable
+(same subject and usages). The halves of a dual key pair stay ambiguous, so
+combine it with `HTTPX_PKI_KEY_USAGE` there.
 :::
 
 Full detail on all of these: [](choosing-a-certificate.md).
