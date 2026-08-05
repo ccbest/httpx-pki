@@ -11,11 +11,13 @@ certificate behavior; they differ only in which httpx client they subclass.
 ```{eval-rst}
 .. autoclass:: httpx_pki.PKIClient
    :members:
+   :private-members: _init_state
    :inherited-members: Client, BaseClient
    :show-inheritance:
 
 .. autoclass:: httpx_pki.AsyncPKIClient
    :members:
+   :private-members: _init_state
    :inherited-members: AsyncClient, BaseClient
    :show-inheritance:
 ```

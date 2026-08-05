@@ -20,6 +20,54 @@ class MyServiceSession(PKIClient):
 Everything the base class offers — `cert_info()`, `reload()`, the validity
 properties, context-manager support, pickling — is inherited.
 
+### Extra constructor keywords: `_init_state()`
+
+Extending `__init__` as above is fine for baking in fixed httpx settings, but
+it is **not** enough when your subclass takes keywords of its own, because two
+paths build a session without ever calling `__init__`: the `from_*` alternate
+constructors (which return your subclass — `MyServiceSession.from_env()` types
+and behaves as a `MyServiceSession`) and unpickling. State set only in
+`__init__` would be missing on both.
+
+The supported seam is the `_init_state()` hook. It runs exactly once on
+**every** construction path, receiving the constructor's extra keyword dict
+before it is forwarded to httpx. Pop your keywords out and set your
+attributes; pop with a default so the attributes exist even when the caller
+passed nothing:
+
+```python
+from httpx_pki import PKIClient
+
+
+class ProxiedSession(PKIClient):
+    def _init_state(self, kwargs):
+        self.proxy_url = kwargs.pop("proxy_url", None)
+        self.do_not_proxy = kwargs.pop("do_not_proxy", ())
+
+
+ProxiedSession("client.p12", password="secret", proxy_url="http://proxy:3128")
+ProxiedSession.from_env()               # hook still runs; defaults apply
+ProxiedSession.from_pkcs12(             # extras pass through any from_*
+    "client.p12", "secret", proxy_url="http://proxy:3128"
+)
+```
+
+Rules of the road:
+
+- **Anything you leave in the dict goes to httpx**, so an unclaimed keyword
+  still fails loudly with a `TypeError` — you only bypass httpx's checking for
+  the keywords you pop.
+- **Pickling is automatic.** The keyword set is snapshotted before the hook
+  pops it, and unpickling re-runs the hook with the original keywords, so
+  state set here survives a pickle round trip — as long as the values are
+  picklable. (Like the rest of the pickle behavior, this restores the session
+  *as constructed*; later mutations of those attributes are not captured.)
+- **`reload()` and `auto_reload` do not re-run the hook** — rotation swaps
+  certificate material in place and leaves your state alone.
+- **Do not touch other session state in the hook.** It runs mid-construction,
+  before the httpx base class is initialized.
+- **Chain in grandchildren** with `super()._init_state(kwargs)`.
+
 ## Just the SSL context
 
 If you do not want the client wrapper, `build_ssl_context()` gives you the hard

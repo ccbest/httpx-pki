@@ -48,6 +48,16 @@ the git history for the fine print.
   `TypeError` rather than silently indexing. A string is a name substring or an
   exact SHA-1/SHA-256 fingerprint, matching the bundle rule. `name=` and
   `thumbprint=` are unchanged and remain the unambiguous spellings.
+- **New: the `_init_state()` subclass hook** — the documented seam for
+  subclasses that take constructor keywords of their own. It runs exactly once
+  on every construction path (`__init__`, every `from_*` alternate
+  constructor, and unpickling — the latter two never call `__init__`, so
+  extending `__init__` alone was not enough), receiving the extra-keyword dict
+  before it is forwarded to httpx. Pop your keywords, set your attributes;
+  what remains must be valid httpx keywords, so unclaimed arguments still fail
+  loudly. State set in the hook survives a pickle round trip automatically,
+  and `reload()`/`auto_reload` leave it untouched. See the subclassing section
+  of the advanced-usage guide.
 - **Bug fix: `reload(password=...)` no longer silently discards the password**
   for sources that supply their own. A client built by `from_env()` reads
   `{prefix}PASSWORD` itself, and the Windows store and macOS keychain export

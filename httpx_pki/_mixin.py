@@ -120,6 +120,11 @@ def _mount_shadows_tls(pattern: object) -> bool:
 class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     _material: Material
     _verify_policy: VerifyTypes
+    # Snapshot of the constructor's extra keywords taken BEFORE _init_state
+    # pops subclass extras -- so it may hold more than httpx keywords. It is
+    # serialized as-is by __getstate__, and __setstate__ replays it through
+    # _apply_material (re-running the hook); snapshotting post-pop would
+    # silently break subclass pickling.
     _httpx_kwargs: dict[str, Any]
     # Parsed once from _material.cert_pem in _apply_material. Parsing is pure, so
     # caching it is invisible (the time-dependent checks recompute "now"
@@ -188,6 +193,16 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         strict_validity: bool = False,
         **kwargs: Any,
     ) -> None:
+        """The shared in-place constructor body.
+
+        Runs exactly once for every path that builds a client -- ``__init__``,
+        ``_from_material`` (behind every ``from_*`` alternate constructor),
+        and ``__setstate__`` -- validating the config, initializing all mixin
+        state (including the :meth:`_init_state` subclass hook), and forwarding
+        the leftover *kwargs* to the httpx base class via ``_httpx_init``.
+        :meth:`reload` never calls this; it swaps certificate material into
+        the mounted SSL context in place.
+        """
         if "cert" in kwargs:
             raise TypeError(
                 "pass the client certificate as the constructor's source= "
@@ -222,7 +237,10 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         self._material = material
         self._verify_policy = verify
-        self._httpx_kwargs = kwargs
+        # Snapshot BEFORE _init_state pops its extras -- see the _httpx_kwargs
+        # annotation for why the pre-pop set is the one pickled.
+        self._httpx_kwargs = dict(kwargs)
+        self._init_state(kwargs)
         self._certinfo = cert_info(material.cert_pem)
         self._source = source
         self._auto_reload = interval
@@ -239,6 +257,37 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         self._warn_on_validity(warn_if_expires_within)
         self._ssl_context = _context_from_material(material, verify)
         self._httpx_init(verify=self._ssl_context, **kwargs)
+
+    def _init_state(self, kwargs: dict[str, Any]) -> None:
+        """Subclass hook: claim constructor keywords and set up extra state.
+
+        Runs exactly once on every path that builds a session -- ``__init__``,
+        every ``from_*`` alternate constructor, and unpickling -- before the
+        remaining *kwargs* are forwarded to the httpx base class. ``pop()``
+        your subclass's keywords out of *kwargs* (it is mutated in place) and
+        assign your attributes; anything left over must be a keyword httpx
+        accepts. Popping with a default keeps the attributes present on every
+        path, including the constructors a caller passes no extras to::
+
+            class TracedClient(PKIClient):
+                def _init_state(self, kwargs):
+                    self.trace_header = kwargs.pop("trace_header", "X-Trace-Id")
+
+            TracedClient("client.p12", trace_header="X-Request-Id")
+            TracedClient.from_env()   # trace_header defaults to "X-Trace-Id"
+
+        The full keyword set is snapshotted for pickling before this hook
+        runs, and an unpickled client re-runs the hook with the original
+        keywords -- state set here survives a pickle round trip with no extra
+        code, as long as the values are themselves picklable.
+        :meth:`reload` and ``auto_reload`` swap certificate material in place
+        and do **not** re-run this hook.
+
+        Do not rely on other session state here: the hook runs mid-
+        construction, before the httpx base class is initialized. When
+        subclassing a subclass, chain with ``super()._init_state(kwargs)``.
+        The base implementation does nothing.
+        """
 
     @classmethod
     def _from_material(  # pylint: disable=too-many-arguments
