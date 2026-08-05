@@ -54,9 +54,9 @@ Neither is raised directly.
 | Message | Cause |
 | --- | --- |
 | `invalid PKCS#12 data or wrong password` | Wrong password, or the bytes are not PKCS#12 |
-| `could not parse private key (wrong password?)` | Encrypted key with a wrong or missing `key_password` |
-| `no private key found in PEM data` | The PEM holds certificates only — see [](../troubleshooting.md#with-no-private-key) |
-| `PKCS#12 data contains no private key` | The bundle holds certificates only — see [](../troubleshooting.md#with-no-private-key) |
+| `could not parse private key (wrong password?)` | Encrypted key with a wrong or missing `password` |
+| `no private key found in PEM data` | The PEM holds certificates only — see [](../troubleshooting.md#no-private-key) |
+| `PKCS#12 data contains no private key` | The bundle holds certificates only — see [](../troubleshooting.md#no-private-key) |
 | `the data is a DER certificate with no private key; …` | A bare `.crt`/`.cer` passed as the single source; use `from_key_pair` |
 | `the data is a certificate-only PKCS#7 bundle with no private key; …` | A `.p7b` passed as the single source; it belongs in `chain=` or `verify=` |
 | `no certificate found in PEM data` | The reverse — a key with no certificate |

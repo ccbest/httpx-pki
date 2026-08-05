@@ -55,6 +55,32 @@ def test_encrypted_pem_key_with_password(client: Signed, ca: Signed) -> None:
         assert session.cn == CLIENT_CN
 
 
+def test_key_pair_encrypted_key_with_password(client: Signed) -> None:
+    # from_key_pair takes the same password= as every other constructor: it
+    # decrypts the key, the only half that can be encrypted at all.
+    encrypted_key = client.key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(b"keypw"),
+    )
+    with PKIClient.from_key_pair(
+        certificate=client.cert_pem, private_key=encrypted_key, password="keypw"
+    ) as session:
+        assert session.cn == CLIENT_CN
+
+
+def test_key_pair_encrypted_key_wrong_password_raises(client: Signed) -> None:
+    encrypted_key = client.key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(b"keypw"),
+    )
+    with pytest.raises(CertificateLoadError, match="could not parse private key"):
+        PKIClient.from_key_pair(
+            certificate=client.cert_pem, private_key=encrypted_key, password="wrong"
+        )
+
+
 def test_pem_without_key_raises(client: Signed) -> None:
     with pytest.raises(CertificateLoadError, match="no private key"):
         PKIClient(client.cert_pem)

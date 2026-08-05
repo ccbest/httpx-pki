@@ -492,7 +492,7 @@ def load_chain_pems(source: CertSource) -> list[bytes]:
 def normalize_pem(
     certificate: CertSource,
     private_key: CertSource,
-    key_password: Password = None,
+    password: Password = None,
     chain: CertSource | list[CertSource] | None = None,
 ) -> Material:
     """Build canonical material from a separate certificate and private key.
@@ -503,9 +503,13 @@ def normalize_pem(
     *chain* carries any further intermediate certificates to present to the
     server: a single source (which may itself concatenate several PEM certs)
     or a list of sources.
+
+    *password* decrypts *private_key* only. An X.509 certificate is public data
+    and is never encrypted in PEM, DER, or certs-only PKCS#7, so there is no
+    corresponding certificate password anywhere in this path.
     """
     certs = _load_certificates(read_source(certificate))
-    key = _load_private_key(read_source(private_key), encode_password(key_password))
+    key = _load_private_key(read_source(private_key), encode_password(password))
     if len(certs) == 1:
         leaf = certs[0]
         _verify_key_matches_cert(key, leaf)

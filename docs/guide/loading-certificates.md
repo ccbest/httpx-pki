@@ -86,7 +86,7 @@ Two files, the shape most non-Windows tooling produces:
 client = PKIClient.from_key_pair(
     certificate="client.crt",
     private_key="client.key",
-    key_password="secret",      # only if the key is encrypted
+    password="secret",          # only if the key is encrypted
     chain="intermediate.crt",   # optional intermediates to present
 )
 ```

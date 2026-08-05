@@ -23,6 +23,10 @@ the git history for the fine print.
   `verify="certifi"` (added in 0.7) pins the certifi bundle for callers who
   want the old behavior. `SSLKEYLOGFILE` is honored by every context either
   way.
+- **Breaking: `from_key_pair`'s `key_password=` is now `password=`**, the same
+  keyword every other constructor and `reload()` already used. Rename the 
+  argument at call sites: `from_key_pair(cert, key, key_password=...)` becomes
+  `from_key_pair(cert, key, password=...)`.
 - **truststore is now a direct required dependency** (it also arrives
   transitively with httpx2, but httpx-pki calls it directly). The `[system]`
   and `[httpx2]` extras still install but are no-ops; they are kept so

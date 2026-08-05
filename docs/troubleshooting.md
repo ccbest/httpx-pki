@@ -17,8 +17,8 @@ of these carry a filename or a count as well. Match on that.
 | --- | --- | --- |
 | **At construction** | | |
 | `invalid PKCS#12 data or wrong password` | Usually the password. httpx-pki says this only after ruling out the cert-only cases below | Check the password, then [](guide/loading-certificates.md) |
-| `could not parse private key (wrong password?)` | The key is encrypted and `password=` / `key_password=` was wrong or missing | [](guide/loading-certificates.md) |
-| `…no private key…` (four wordings) | Your source has certificates but no key — you are holding half a credential | [](#with-no-private-key) |
+| `could not parse private key (wrong password?)` | The key is encrypted and `password=` was wrong or missing | [](guide/loading-certificates.md) |
+| `…no private key…` (four wordings) | Your source has certificates but no key — you are holding half a credential | [](#no-private-key) |
 | `…no certificate…` (two wordings) | The reverse: a key with no certificate | [](#no-certificate) |
 | `…does not match…` (two wordings) | The cert and key you paired are not a pair | [](#the-key-and-certificate-do-not-match) |
 | `AmbiguousCertificateError` | Several credentials matched and httpx-pki will not guess. The message lists them | [](guide/choosing-a-certificate.md) |

@@ -377,7 +377,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         certificate: CertSource,
         private_key: CertSource,
         *,
-        key_password: Password = None,
+        password: Password = None,
         chain: CertSource | list[CertSource] | None = None,
         verify: VerifyTypes = True,
         warn_if_expires_within: datetime.timedelta | None = None,
@@ -390,11 +390,14 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         *certificate* is the client (leaf) certificate. Pass *chain* to present
         intermediate certificates to the server: a single source (which may
         concatenate several PEM certs) or a list of sources.
+        *password* decrypts *private_key* if it is encrypted; certificates are
+        never encrypted, so it is the same *password* every other constructor
+        takes.
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
         """
-        encoded = encode_password(key_password)
-        material = normalize_pem(certificate, private_key, key_password, chain)
+        encoded = encode_password(password)
+        material = normalize_pem(certificate, private_key, password, chain)
         return cls._from_material(
             material,
             verify=verify,
