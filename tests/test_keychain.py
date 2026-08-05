@@ -66,9 +66,9 @@ def test_select_by_thumbprint_with_separators() -> None:
     assert chosen.subject_cn == "ACME Dev Client"
 
 
-def test_select_by_predicate() -> None:
+def test_select_by_identity_predicate() -> None:
     chosen = select_macos_certificate(
-        CANDIDATES, predicate=lambda c: c.label == "prod"
+        CANDIDATES, identity=lambda c: c.label == "prod"
     )
     assert chosen.thumbprint == "AA11BB"
 

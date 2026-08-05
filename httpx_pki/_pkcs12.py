@@ -604,7 +604,7 @@ def _listing(identities: list[P12Identity]) -> str:
         if i.friendly_name:
             parts.append(f"({i.friendly_name})")
         parts.append(f"key_usage={','.join(sorted(i.info.key_usage)) or '<none>'}")
-        parts.append(f"expires={i.info.not_after:%Y-%m-%d}")
+        parts.append(f"expires={i.info.not_valid_after:%Y-%m-%d}")
         parts.append(i.info.fingerprint_sha1)
         lines.append(" ".join(parts))
     return "\n".join(lines)

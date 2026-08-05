@@ -75,8 +75,8 @@ class CertInfo:  # pylint: disable=too-many-instance-attributes
     issuer_common_name: str | None
     issuer_distinguished_name: str
     serial_number: int
-    not_before: datetime.datetime
-    not_after: datetime.datetime
+    not_valid_before: datetime.datetime
+    not_valid_after: datetime.datetime
     fingerprint_sha256: str
     fingerprint_sha1: str
     subject_alt_names: list[str]
@@ -492,7 +492,7 @@ def load_chain_pems(source: CertSource) -> list[bytes]:
 def normalize_pem(
     certificate: CertSource,
     private_key: CertSource,
-    key_password: Password = None,
+    password: Password = None,
     chain: CertSource | list[CertSource] | None = None,
 ) -> Material:
     """Build canonical material from a separate certificate and private key.
@@ -503,9 +503,13 @@ def normalize_pem(
     *chain* carries any further intermediate certificates to present to the
     server: a single source (which may itself concatenate several PEM certs)
     or a list of sources.
+
+    *password* decrypts *private_key* only. An X.509 certificate is public data
+    and is never encrypted in PEM, DER, or certs-only PKCS#7, so there is no
+    corresponding certificate password anywhere in this path.
     """
     certs = _load_certificates(read_source(certificate))
-    key = _load_private_key(read_source(private_key), encode_password(key_password))
+    key = _load_private_key(read_source(private_key), encode_password(password))
     if len(certs) == 1:
         leaf = certs[0]
         _verify_key_matches_cert(key, leaf)
@@ -618,8 +622,8 @@ def certificate_info(cert: x509.Certificate) -> CertInfo:
         issuer_common_name=_name_cn(cert.issuer),
         issuer_distinguished_name=cert.issuer.rfc4514_string(),
         serial_number=cert.serial_number,
-        not_before=cert.not_valid_before_utc,
-        not_after=cert.not_valid_after_utc,
+        not_valid_before=cert.not_valid_before_utc,
+        not_valid_after=cert.not_valid_after_utc,
         fingerprint_sha256=cert.fingerprint(hashes.SHA256()).hex().upper(),
         fingerprint_sha1=cert.fingerprint(hashes.SHA1()).hex().upper(),
         subject_alt_names=sans,

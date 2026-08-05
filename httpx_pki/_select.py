@@ -14,7 +14,7 @@ PKCS#12 bag name -- but the question is the same, so the vocabulary is shared:
   (:func:`~httpx_pki._winstore.select_windows_certificate`,
   :func:`~httpx_pki._keychain.select_macos_certificate`);
 * :data:`currently_valid` is the ready-made renewal selector, accepted
-  anywhere a predicate is.
+  anywhere an ``identity`` is.
 
 Every selector **intersects**: each one given narrows the candidates further,
 so a name and a key usage together mean "both", never "whichever is more
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable, Iterable, Sequence
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from cryptography import x509
 
@@ -71,7 +71,7 @@ class _CertDetails:
     same whether it is filtering a PKCS#12 file, the Windows store, or the
     macOS keychain::
 
-        predicate=lambda c: "digital_signature" in c.key_usage
+        identity=lambda c: "digital_signature" in c.key_usage
 
     Both accessors are empty rather than ``None`` when the certificate could
     not be read, so a predicate never has to guard against it -- such a
@@ -110,7 +110,7 @@ class _CurrentlyValid:
         if info is None:
             return False
         now = datetime.datetime.now(datetime.timezone.utc)
-        return info.not_before <= now <= info.not_after
+        return info.not_valid_before <= now <= info.not_valid_after
 
     @staticmethod
     def narrow(matches: Sequence[_C]) -> list[_C]:
@@ -135,7 +135,7 @@ class _CurrentlyValid:
         if len(profiles) != 1:
             return list(matches)
         latest = max(
-            (m.info.not_after, m.info.not_before)
+            (m.info.not_valid_after, m.info.not_valid_before)
             for m in matches
             if m.info is not None
         )
@@ -143,7 +143,7 @@ class _CurrentlyValid:
             m
             for m in matches
             if m.info is not None
-            and (m.info.not_after, m.info.not_before) == latest
+            and (m.info.not_valid_after, m.info.not_valid_before) == latest
         ]
 
     def __repr__(self) -> str:
@@ -157,8 +157,8 @@ class _CurrentlyValid:
 currently_valid = _CurrentlyValid()
 """Selector for the certificate whose validity window contains *now*.
 
-Usable anywhere a predicate is: ``identity=currently_valid`` for PKCS#12 and
-PEM bundles, ``predicate=currently_valid`` for the platform stores. Built for
+Usable anywhere an ``identity`` is -- ``identity=currently_valid`` for PKCS#12
+and PEM bundles and for the platform stores alike. Built for
 the renewal case -- a bundle or store holding the renewed certificate alongside
 the one it replaces::
 
@@ -288,36 +288,79 @@ def matches_usages(
 # -- store selection --------------------------------------------------------
 
 
+def _matches_identity(
+    candidate: _StoreCert,
+    needle: str,
+    aliases: Callable[[Any], tuple[str | None, ...]],
+) -> bool:
+    """Match a string ``identity=`` against one store candidate.
+
+    Mirrors the bundle rule in :func:`~httpx_pki._pkcs12._matches_name`: a
+    full-length hex digest is an exact fingerprint comparison, anything else a
+    case-insensitive substring of the candidate's aliases. Keeping the two
+    identical is what lets ``identity="ACME"`` mean the same thing whether the
+    source is a ``.p12`` or the Windows store.
+    """
+    target = normalize_thumbprint(needle)
+    if len(target) in (40, 64) and all(c in "0123456789ABCDEF" for c in target):
+        digests = {candidate.thumbprint}
+        if candidate.info is not None:
+            digests.add(candidate.info.fingerprint_sha256)
+        return target in digests
+    lowered = needle.lower()
+    return any(
+        alias is not None and lowered in alias.lower()
+        for alias in aliases(candidate)
+    )
+
+
 def select_certificate(  # pylint: disable=too-many-arguments
     candidates: Sequence[_C],
     *,
     name: str | None,
     thumbprint: str | None,
-    predicate: Callable[[_C], bool] | None,
+    identity: str | Callable[[_C], bool] | None,
     aliases: Callable[[_C], tuple[str | None, ...]],
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
 ) -> _C:
     """Choose a single certificate from *candidates*.
 
-    Every selector given must match: an exact ``thumbprint`` (compared
-    normalized -- colons, spaces, and case are ignored), a ``predicate``
-    callable, a case-insensitive ``name`` substring matched against the strings
+    Every selector given must match: an ``identity`` (a name substring, an
+    exact SHA-1/SHA-256 fingerprint, or a predicate callable), an exact
+    ``thumbprint`` (compared normalized -- colons, spaces, and case are
+    ignored), a case-insensitive ``name`` substring matched against the strings
     *aliases* extracts from each candidate, and the ``key_usage`` /
     ``extended_key_usage`` the certificate must assert. With no selector, all
     candidates qualify (handy when the store holds exactly one).
-    ``predicate=currently_valid`` picks the certificate whose validity window
+    ``identity=currently_valid`` picks the certificate whose validity window
     contains now, preferring the renewed one during a renewal overlap.
+
+    ``name``/``thumbprint`` are the unambiguous spellings; ``identity`` is the
+    portable one, accepting exactly what a PKCS#12 or PEM bundle's ``identity``
+    does apart from an integer position -- a store has no stable ordering, so
+    that is rejected rather than silently indexing.
 
     Raises :class:`~httpx_pki.CertificateNotFoundError` if nothing matches and
     :class:`~httpx_pki.AmbiguousCertificateError` if more than one does.
     """
+    if isinstance(identity, bool) or isinstance(identity, int):
+        raise TypeError(
+            "identity= cannot be an integer for a platform certificate store: "
+            "a store has no stable ordering, so a position would select a "
+            "different certificate from one run to the next. Use a name, a "
+            "thumbprint, or a predicate."
+        )
     matches = list(candidates)
     if thumbprint is not None:
         target = normalize_thumbprint(thumbprint)
         matches = [c for c in matches if c.thumbprint == target]
-    if predicate is not None:
-        matches = [c for c in matches if predicate(c)]
+    if identity is not None:
+        if isinstance(identity, str):
+            needle = identity
+            matches = [c for c in matches if _matches_identity(c, needle, aliases)]
+        else:
+            matches = [c for c in matches if identity(c)]
     if name is not None:
         needle = name.lower()
         matches = [
@@ -332,11 +375,11 @@ def select_certificate(  # pylint: disable=too-many-arguments
         matches = [
             c for c in matches if matches_usages(c, key_usage, extended_key_usage)
         ]
-    if predicate is not None:
-        matches = _narrowed(predicate, matches)
+    if identity is not None:
+        matches = _narrowed(identity, matches)
 
     selector = _selector_repr(
-        name, thumbprint, predicate, key_usage, extended_key_usage
+        name, thumbprint, identity, key_usage, extended_key_usage
     )
     if not matches:
         raise CertificateNotFoundError(
@@ -367,7 +410,7 @@ def _listing(candidates: Sequence[_StoreCert]) -> str:
         if candidate.key_usage:
             parts.append(f"key_usage={','.join(sorted(candidate.key_usage))}")
         if candidate.info is not None:
-            parts.append(f"expires={candidate.info.not_after:%Y-%m-%d}")
+            parts.append(f"expires={candidate.info.not_valid_after:%Y-%m-%d}")
         parts.append(candidate.thumbprint)
         lines.append(" ".join(parts))
     return "\n".join(lines) if lines else "  (nothing)"
@@ -376,15 +419,15 @@ def _listing(candidates: Sequence[_StoreCert]) -> str:
 def _selector_repr(  # pylint: disable=too-many-arguments
     name: str | None,
     thumbprint: str | None,
-    predicate: object,
+    identity: object,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
 ) -> str:
     described = []
     if thumbprint is not None:
         described.append(f"thumbprint={thumbprint!r}")
-    if predicate is not None:
-        described.append("predicate")
+    if identity is not None:
+        described.append(f"identity={identity!r}")
     if name is not None:
         described.append(f"name={name!r}")
     if key_usage is not None:

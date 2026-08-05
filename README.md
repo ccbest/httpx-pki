@@ -4,6 +4,7 @@
 [![codecov](https://img.shields.io/codecov/c/github/ccbest/httpx-pki?branch=main)](https://codecov.io/gh/ccbest/httpx-pki)
 [![PyPI](https://img.shields.io/pypi/v/httpx-pki)](https://pypi.org/project/httpx-pki/)
 [![Python versions](https://img.shields.io/pypi/pyversions/httpx-pki)](https://pypi.org/project/httpx-pki/)
+[![Docs](https://img.shields.io/readthedocs/httpx-pki)](https://httpx-pki.readthedocs.io/)
 [![License: MIT](https://img.shields.io/pypi/l/httpx-pki)](https://github.com/ccbest/httpx-pki/blob/main/LICENSE)
 [![Checked with mypy](https://img.shields.io/badge/mypy-checked-2a6db2)](https://mypy-lang.org/)
 
@@ -22,6 +23,8 @@ with PKIClient("client.p12", password="secret") as client:
     print(resp.status_code)
 ```
 
+📖 **[Full documentation](https://httpx-pki.readthedocs.io/)**
+
 #### Purpose
 
 httpx deprecated its `cert=` argument in 0.28 — a design httpx2 keeps — in
@@ -34,363 +37,52 @@ from PKCS#12 or in-memory bytes. `httpx-pki` is that missing piece.
 pip install httpx-pki
 ```
 
-Requires Python 3.10+, `httpx2>=2.9`, and `cryptography>=44` (`truststore` and
-`certifi`, which back server verification, come along as dependencies).
+Requires Python 3.10+. httpx2 comes with it, along with `cryptography`,
+`truststore`, and `certifi`.
 
-### httpx2 or httpx?
+Prefer the original httpx? It stays fully supported — install with `--no-deps`
+so httpx2 isn't pulled in. See
+[Install](https://httpx-pki.readthedocs.io/en/stable/install.html) and
+[Backends](https://httpx-pki.readthedocs.io/en/stable/guide/backends.html).
 
-Both. httpx development continues under pydantic's stewardship as
-[httpx2](https://github.com/pydantic/httpx2), and `httpx-pki` works with either:
-when httpx2 is importable it is preferred (the session classes subclass
-`httpx2.Client`), otherwise `httpx-pki` binds to httpx. `httpx_pki.HTTP_BACKEND`
-reports which backend won, and setting `HTTPX_PKI_BACKEND=httpx` (or `httpx2`)
-in the environment forces the choice — the escape hatch if httpx2 arrives in
-your environment as a transitive dependency of something else but your code
-still expects `PKIClient` to subclass `httpx.Client`. Install the httpx2
-backend with `pip install httpx-pki[httpx2]`.
+## Whatever you were handed, there's a one-liner for it
 
-In the upcoming 0.8 release, [httpx2](https://github.com/pydantic/httpx2) — httpx's continuation
-under pydantic's stewardship — will become the required dependency, and the session
-classes will subclass `httpx2.Client` / `httpx2.AsyncClient`. The original httpx
-will remain fully supported as a fallback: with `httpx>=0.28` installed,
-`httpx-pki` binds to httpx whenever httpx2 is absent, and setting
-`HTTPX_PKI_BACKEND=httpx` in the environment forces it even when httpx2 is
-installed — the escape hatch for code that expects `PKIClient` to subclass
-the original `httpx.Client`. `httpx_pki.HTTP_BACKEND` reports which backend was 
-resolved.
-
-In 0.8, the `verify=True` default will move from certifi to the OS
-trust store (see [Server trust](#server-trust-verify)); pass `verify="certifi"`
-to keep the old bundle. The `[system]` and `[httpx2]` extras still install but
-are no-ops — truststore and httpx2 are required dependencies now.
-
-One caveat with both packages installed: `isinstance(client, httpx.Client)`
-against the *original* httpx is False once the sessions subclass httpx2. Either
-force the backend as above, or migrate the check (calling
-[`httpx2.alias_httpx()`](https://github.com/pydantic/httpx2) in your application
-makes `import httpx` resolve to httpx2 everywhere, which keeps such checks
-consistent).
-
-## Supported formats
-
-Certificate files come with many extensions (`.p12`, `.pfx`, `.pem`, `.crt`,
-`.key`, `.tls`, `.ukey`, ...), but an extension is just a name — what matters is
-the **encoding of the bytes**. `httpx-pki` detects that from the content, so the
-extension never matters:
-
-| Input | Constructor | Notes |
-| --- | --- | --- |
-| **PKCS#12** (`.p12`, `.pfx`, binary) | `PKIClient(...)` or `from_pkcs12(...)` | key + cert + chain in one password-protected blob; may hold [several identities](#when-one-bundle-holds-several-identities) |
-| **PEM bundle** (key + cert(s) in one file) | `PKIClient(...)` or `from_pem(...)` | any block order; PKCS#1/PKCS#8/EC/encrypted keys; may hold [several identities](#when-one-bundle-holds-several-identities) too |
-| **Separate cert + key** (PEM *or* DER) | `from_key_pair(...)` | optional `chain=` intermediates |
-| **PKCS#7 / `.p7b`** (certs only, DER or PEM) | `certificate=`/`chain=` in `from_key_pair`, or a `verify=` CA bundle | holds no private key — pairs with a separate key |
-| **Windows cert store** | `from_windows_cert_store(...)` | Windows only; see below |
-| **macOS keychain** | `from_macos_keychain(...)` | macOS only; see below |
-
-`PKIClient(source, password=...)` auto-detects PKCS#12 vs PEM, so you can point
-it at whatever you were handed. Use the explicit `from_pkcs12` / `from_pem`
-constructors when you want to force one interpretation.
-
-## Usage
-
-### From a PKCS#12 bundle (`.p12` / `.pfx`)
-
-A path (`str` or `pathlib.Path`) or raw `bytes` both work:
-
-```python
-from pathlib import Path
-from httpx_pki import PKIClient
-
-PKIClient("client.p12", password="secret")          # path
-PKIClient(Path("client.pfx"), password="secret")     # pathlib.Path
-PKIClient(p12_bytes, password=b"secret")             # bytes; password may be bytes
-```
-
-### When one bundle holds several identities
-
-A bundle — PKCS#12 or PEM alike — can carry more than one **identity**: a
-private key with its certificate. Two identities for the same subject is routine wherever a CA
-archives the key that *decrypts* data, so encrypted mail and files survive a
-lost laptop, but never the key that *signs*, which would defeat
-non-repudiation: Entrust dual key pairs, PIV/CAC, S/MIME key archival, national
-eID schemes. The two certificates differ in their key usage, and that is
-usually all that tells them apart.
-
-Which bits exactly depends on the algorithm and the scheme:
-
-| Half | Typical key usage |
-| --- | --- |
-| encryption | `key_encipherment` (RSA) or `key_agreement` (ECDH) |
-| signing | `digital_signature`, and/or `content_commitment` — the bit most CAs still call *nonRepudiation*, which `key_usage=` accepts as a spelling |
-
-**For mTLS you almost always want the signing half.** TLS 1.3, and every ECDHE
-suite before it, has the client sign the handshake; an encryption-only
-certificate cannot complete one.
-
-Some schemes split three ways rather than two — a PIV card carries
-authentication, signature, and key-management certificates, and the first two
-both assert `digital_signature`. There the extended key usage is the
-discriminator (`client_auth` versus `email_protection`), which
-`extended_key_usage=` selects on.
-
-Loading such a file without saying which one you want raises rather than
-presenting whichever the file happens to store first:
-
-```python
->>> PKIClient("corp.p12", password="secret")
-AmbiguousCertificateError: this PKCS#12 data holds 2 identities:
-  [0] corp-user (Signature) key_usage=digital_signature expires=2027-07-30 8F78A78195…
-  [1] corp-user (Encryption) key_usage=key_encipherment expires=2027-07-30 6E88063681…
-Pick one with identity= (index, name, or fingerprint), key_usage=, or extended_key_usage=.
-```
-
-See what a file holds with `list_identities` — it detects PKCS#12 vs PEM from
-the content, exactly like the constructors, and never returns the private keys
-(`list_pkcs12_identities` is the sibling for when only PKCS#12 should be
-accepted):
-
-```python
-from httpx_pki import list_identities
-
-for identity in list_identities("corp.p12", password="secret"):
-    print(identity.index, identity.friendly_name,
-          sorted(identity.info.key_usage), identity.info.extended_key_usage)
-```
-
-Then select one. Every bundle entry point — `PKIClient(...)`,
-`from_pkcs12(...)`, `from_pem(...)`, `AsyncPKIClient`, and
-`build_ssl_context` — takes the same three selectors, and they intersect if
-you pass more than one:
-
-```python
-# by key usage: the usual discriminator for a dual key pair
-PKIClient("corp.p12", password="secret", key_usage="digital_signature")
-
-# by extended key usage, when both certs share their key-usage bits
-PKIClient("corp.p12", password="secret", extended_key_usage="client_auth")
-
-# by name: a case-insensitive substring of the friendly name, common name,
-# or full subject
-PKIClient("corp.p12", password="secret", identity="Signature")
-
-# by exact SHA-1 or SHA-256 fingerprint (colons and case are ignored)
-PKIClient("corp.p12", password="secret", identity="9F:86:D0:81…")
-
-# by file position, or by any predicate over the identity
-PKIClient("corp.p12", password="secret", identity=0)
-PKIClient(
-  "corp.p12", 
-  password="secret",
-  identity=lambda i: i.info.serial_number == 4242
-)
-```
-
-A selector that matches nothing raises `CertificateNotFoundError`; one that
-matches several raises `AmbiguousCertificateError`. Usage names are spelled as
-`CertInfo` reports them (`digital_signature`, `client_auth`), and `keyUsage`
-camelCase and dotted OIDs are accepted too.
-
-The same applies when a file carries a **renewed certificate next to the one it
-replaces** — two certificates over one key pair, which is what renewing rather
-than rekeying produces. Those are two identities as well, and since only the
-validity window separates them, the ready-made `currently_valid` selector is
-the way to pick:
-
-```python
-from httpx_pki import PKIClient, currently_valid
-
-PKIClient("corp.p12", password="secret", identity=currently_valid)
-```
-
-Not-yet-valid and expired identities never match it. During the renewal
-*overlap*, when the old certificate has not expired yet, the tie resolves to
-the later validity window — but only between certificates that are otherwise
-interchangeable (same subject and usages). It never picks between the halves
-of a dual key pair: freshness cannot tell a signing certificate from an
-encryption one, so combine it with `key_usage=` there.
-
-**PEM bundles get the same treatment.** A `.pem` concatenating two key+cert
-pairs — or one key followed by its old and renewed certificates — holds
-several identities, chosen with the same selectors. Keys are paired to
-certificates by public key, in any block order; a key matching no certificate
-at all still means the bundle was assembled from the wrong pieces, and is
-rejected.
-
-The other identities' certificates are **not** presented as chain certificates
-— they are leaf certificates of their own, and a strict server can reject a
-chain carrying them. Only real chain certificates are sent.
-
-The selection is remembered: `reload()` and `auto_reload` re-select the same
-identity after a rotation, even if the new file lists the identities in a
-different order, and it survives pickling.
-
-### From a PEM file (key + cert in one blob)
+Certificate files come with all sorts of extensions — `.p12`, `.pfx`, `.pem`,
+`.crt`, `.tls` — but an extension is just a name. `httpx-pki` detects the
+encoding from the **bytes**, so you can point it at whatever your PKI team sent
+you:
 
 ```python
 from httpx_pki import PKIClient
 
-PKIClient("client.pem")                       # auto-detected
-PKIClient.from_pem("client.pem")              # explicit
-PKIClient.from_pem(pem_bytes, password="..")  # if the key block is encrypted
+# PKCS#12 bundle — key + cert + chain in one blob
+PKIClient("client.p12", password="secret")
+
+# PEM bundle — key + cert(s) in one file, any block order
+PKIClient("client.pem")
+
+# Raw bytes you already have in hand
+PKIClient(p12_bytes, password=b"secret")
+
+# Separate certificate and key, PEM or DER
+PKIClient.from_key_pair("client.crt", "client.key")
+
+# ...with intermediates, as PEM or PKCS#7
+PKIClient.from_key_pair("client.crt", "client.key", chain="chain.p7b")
+
+# The Windows certificate store (Windows only)
+PKIClient.from_windows_cert_store(name="Acme Corp")
+
+# The macOS keychain (macOS only)
+PKIClient.from_macos_keychain(name="Acme Corp")
+
+# Configured entirely by environment variables
+PKIClient.from_env()
 ```
 
-A PEM bundle holding more than one key+cert pair takes the same `identity=` /
-`key_usage=` / `extended_key_usage=` selectors as PKCS#12 — see
-[several identities](#when-one-bundle-holds-several-identities).
+→ [Loading certificates](https://httpx-pki.readthedocs.io/en/stable/guide/loading-certificates.html)
 
-### From a separate certificate and key
-
-```python
-from httpx_pki import PKIClient
-
-client = PKIClient.from_key_pair(
-    certificate="client.crt",
-    private_key="client.key",
-    key_password="secret",      # if the key is encrypted
-    chain="intermediate.crt",   # optional: intermediates to present; one
-                                # path/bytes (may concatenate several) or a list
-)
-```
-
-If `certificate` is itself a bundle (leaf plus intermediates in one PEM file),
-the leaf is identified by matching the private key — in any block order — and
-the other certificates are presented as chain automatically. Both `certificate`
-and `chain` also accept certs-only **PKCS#7** bundles (`.p7b`/`.p7c`, DER or
-PEM) — the format Windows CAs commonly export chains in.
-
-### From the Windows certificate store (Windows only)
-
-Pull an **exportable** client certificate (key included) straight out of the
-user's personal store, selecting by a case-insensitive substring of the subject
-common name or the Windows "friendly name":
-
-```python
-from httpx_pki import PKIClient
-
-with PKIClient.from_windows_cert_store(name="ACME Client") as client:
-    client.get("https://mtls.example.com/")
-```
-
-If several certificates match you'll get an `AmbiguousCertificateError` listing
-the candidates with their key usages and expiry; narrow it with any combination
-of selectors — **every one you pass must match**:
-
-```python
-PKIClient.from_windows_cert_store(thumbprint="A1:B2:C3:...")
-PKIClient.from_windows_cert_store(predicate=lambda c: c.friendly_name == "prod")
-PKIClient.from_windows_cert_store(name="ACME", location="LocalMachine")
-
-# A dual key pair — what AD key archival provisions — puts both halves in the
-# store under one subject. The key usage is what separates them:
-PKIClient.from_windows_cert_store(name="ACME", key_usage="digital_signature")
-PKIClient.from_windows_cert_store(name="ACME", extended_key_usage="client_auth")
-```
-
-To see what's in the store before selecting, `list_windows_certificates()`
-returns a `WinCert` for each certificate — metadata only, no key is exported:
-
-```python
-from httpx_pki import list_windows_certificates
-
-for c in list_windows_certificates():        # location="LocalMachine" for the machine store
-    print(c.friendly_name, c.subject_cn, c.thumbprint, sorted(c.key_usage))
-```
-
-Each `WinCert` also carries the parsed `certificate` and its `info`
-(a [`CertInfo`](#inspecting-the-certificate)), so a predicate can select on
-anything a certificate holds — including skipping the expired copy a store
-tends to keep after a renewal, which the ready-made `currently_valid`
-selector does for you:
-
-```python
-from httpx_pki import currently_valid
-
-PKIClient.from_windows_cert_store(name="ACME", predicate=currently_valid)
-```
-
-Notes:
-
-- **Windows only** — calling it elsewhere raises `UnsupportedPlatformError`.
-- The certificate's private key must have been imported as **exportable** —
-  otherwise the export fails with a `CertificateLoadError`.
-- No password is involved: the cert is exported under a random, single-use
-  password that never leaves the library.
-- `AsyncPKIClient.from_windows_cert_store(...)` is the async equivalent.
-
-### From the macOS keychain (macOS only)
-
-The macOS sibling of the Windows store: pull an **exportable** identity
-(certificate + private key) out of the default keychain search list, selecting
-by a case-insensitive substring of the subject common name or the keychain
-label:
-
-```python
-from httpx_pki import PKIClient
-
-with PKIClient.from_macos_keychain(name="ACME Client") as client:
-    client.get("https://mtls.example.com/")
-```
-
-Selection works exactly like the Windows store — `AmbiguousCertificateError`
-lists the candidates, and every selector you pass must match:
-
-```python
-PKIClient.from_macos_keychain(thumbprint="A1:B2:C3:...")
-PKIClient.from_macos_keychain(predicate=lambda c: c.label == "prod")
-
-# Both halves of a dual key pair in one keychain, told apart by usage:
-PKIClient.from_macos_keychain(name="ACME", key_usage="digital_signature")
-PKIClient.from_macos_keychain(name="ACME", extended_key_usage="email_protection")
-
-# The renewed identity rather than the expired one kept alongside it:
-PKIClient.from_macos_keychain(name="ACME", predicate=currently_valid)
-```
-
-`list_macos_certificates()` returns a `MacCert` per identity — subject CN,
-keychain label, SHA-1 thumbprint, plus the parsed `certificate`, its `info`,
-and `key_usage` / `extended_key_usage`; metadata only, no key is exported.
-`build_macos_ssl_context(...)` is the session-less seam, mirroring
-`build_windows_ssl_context`.
-
-Notes:
-
-- **macOS only** — calling it elsewhere raises `UnsupportedPlatformError`.
-- The private key must be exportable, and the keychain may require **user
-  consent** for the export. A headless session cannot grant consent — for
-  unattended use, import the certificate with access pre-granted
-  (`security import client.p12 -k login.keychain -A`) or click "Always Allow"
-  once in the consent dialog.
-- No password is involved: the identity is exported under a random,
-  single-use password that never leaves the library.
-- `reload()` re-exports from the keychain with the same selector; there is no
-  file to watch, so `auto_reload` is not available.
-- `AsyncPKIClient.from_macos_keychain(...)` is the async equivalent.
-
-### From environment variables
-
-For containerized / 12-factor deployments, configure the certificate out of band:
-
-```python
-from httpx_pki import PKIClient
-
-with PKIClient.from_env() as client:        # reads HTTPX_PKI_* by default
-    client.get("https://mtls.example.com/")
-```
-
-| Variable | Meaning |
-| --- | --- |
-| `HTTPX_PKI_CERT` | path to a PKCS#12 or PEM source (**required**) |
-| `HTTPX_PKI_PASSWORD` | password for the cert / key (optional) |
-| `HTTPX_PKI_KEY` | path to a separate private key; switches to cert+key mode |
-| `HTTPX_PKI_CHAIN` | intermediates to present, in addition to any carried by `CERT` |
-| `HTTPX_PKI_CA` | CA bundle for **server** trust (`verify=`), or the literal `system` for the OS trust store / `certifi` for the certifi bundle |
-| `HTTPX_PKI_IDENTITY` | which identity to present when `CERT` holds several: a file position, a name substring, a fingerprint, or the literal `currently_valid` |
-| `HTTPX_PKI_KEY_USAGE` | identity selector by key usage, comma-separated (e.g. `digital_signature`) |
-| `HTTPX_PKI_EXT_KEY_USAGE` | identity selector by extended key usage, comma-separated (e.g. `client_auth`) |
-
-Pass a different `prefix=` to namespace per service (`PKIClient.from_env("MYAPP_")`).
-
-### Async
+## Async
 
 ```python
 from httpx_pki import AsyncPKIClient
@@ -399,206 +91,74 @@ async with AsyncPKIClient("client.p12", password="secret") as client:
     resp = await client.get("https://mtls.example.com/")
 ```
 
-### Passing httpx options
+## One file, several certificates
 
-Any extra keyword arguments flow straight through to the underlying httpx client:
+A PKCS#12 or PEM bundle can hold more than one identity — a dual key pair from
+AD key archival, or a renewed certificate kept beside the one it replaces.
+`cryptography` can't express that: it returns the first key and leaves the other
+identity's certificate looking like a chain certificate. `httpx-pki` reads the
+structure itself, so you can inspect and select:
 
 ```python
-PKIClient("client.p12", base_url="https://api.example.com",
-           headers={"User-Agent": "me"}, timeout=10.0, http2=True)
+from httpx_pki import PKIClient, list_identities, currently_valid
+
+list_identities("corp.p12", password="secret")   # see what's in there
+
+PKIClient("corp.p12", password="secret", key_usage="digital_signature")
+PKIClient("corp.p12", password="secret", identity="Signature")
+PKIClient("corp.p12", password="secret", identity=currently_valid)
 ```
 
-### Server trust (`verify`)
+Loading a multi-identity bundle without a selector raises rather than guessing.
 
-Mounting *your* client certificate and verifying the *server's* certificate are
-independent. `verify` behaves just like httpx2 — `True` (default, the
-operating-system trust store), `False` to disable (with a warning), a path to
-a CA bundle, or a ready-made `ssl.SSLContext` — plus two httpx-pki literals:
-`"system"` (a synonym of `True`, kept from when the OS store was opt-in) and
-`"certifi"` to pin the certifi CA bundle by name:
+→ [Choosing the right certificate](https://httpx-pki.readthedocs.io/en/stable/guide/choosing-a-certificate.html)
 
-```python
-PKIClient("client.p12", verify="/etc/ssl/custom-ca.pem")
-```
+## Server trust
 
-The CA-bundle path may be PEM or a certs-only **PKCS#7** bundle (`.p7b`, DER or
-PEM) — handy when the private CA was exported from a Windows CA, which OpenSSL
-itself can't read as a `cafile`.
-
-#### The default: the OS trust store
-
-Since 0.8, `verify=True` verifies the server against the **operating-system
-trust store** (Windows CryptoAPI / macOS Security framework / OpenSSL's system
-CA paths on Linux), via the same
-[truststore](https://truststore.readthedocs.io/) machinery httpx2 and pip use
-by default. That's where private CAs distributed through your OS live (group
-policy, MDM, a TLS-inspecting proxy) — the ones behind the classic
-`CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate` right
-after your client certificate loaded fine, which certifi has never heard of.
-`verify="system"` remains as an explicit synonym from when the OS store was
-opt-in; both spellings survive pickling, unlike a custom `ssl.SSLContext`.
-(A CA-bundle *file* literally named `system` can still be passed as
-`Path("system")`.)
-
-#### Pinning certifi: `verify="certifi"`
-
-The certifi bundle — the default through 0.7, and still what the original
-httpx uses for `verify=True` — remains available by name, for callers who want
-exactly the bundled public CAs regardless of what the OS store holds:
+Your client certificate and the server's are independent. `verify=True` (the
+default) uses the **OS trust store**, so corporate CAs distributed by group
+policy or MDM work out of the box:
 
 ```python
+PKIClient("client.p12", password="secret", verify="/etc/ssl/internal-ca.pem")
 PKIClient("client.p12", password="secret", verify="certifi")
 ```
 
-Works with every constructor and `build_ssl_context`; `HTTPX_PKI_CA=certifi`
-(or `system`) selects the corresponding trust for `from_env`.
+→ [Server trust](https://httpx-pki.readthedocs.io/en/stable/guide/server-trust.html)
 
-> **Passing your own `ssl.SSLContext`?** `httpx-pki` loads the client certificate
-> into that exact object (it can't be copied), so don't reuse a shared context
-> across clients — each load would overwrite the previous cert. You'll get a
-> warning. Pass `verify=True` or a CA-bundle path to let `httpx-pki` build a
-> dedicated context instead.
+## Expiry and rotation
 
-Like httpx, contexts built by `httpx-pki` honor the `SSLKEYLOGFILE` environment
-variable, logging TLS session keys to that file so a capture tool (e.g.
-Wireshark) can decrypt the handshake — invaluable when debugging mTLS failures.
-A context you pass in yourself is left untouched.
-
-### Subclassing
-
-```python
-class MyServiceSession(PKIClient):
-    def __init__(self, p12, **kwargs):
-        super().__init__(p12, base_url="https://service.internal", **kwargs)
-
-    def health(self):
-        return self.get("/health").json()
-```
-
-### Inspecting the certificate
-
-```python
-info = client.cert_info()
-print(info.common_name, info.not_after, info.subject_alt_names)
-print(info.dns_names)             # just the dNSName SANs, for hostname checks
-print(info.issuer_common_name)    # who signed it (issuer_distinguished_name for the full DN)
-print(info.serial_number_hex)     # audit logging (serial_number for the raw int)
-print(info.fingerprint_sha256)    # uppercase hex, no separators
-```
-
-`subject_alt_names` lists every SAN entry as a string (DNS names, IP addresses,
-email addresses, URIs); `dns_names` is the dNSName subset.
-
-`fingerprint_sha1` is also available, in the same format the platform stores
-use for thumbprints — so it can be compared against
-`list_windows_certificates()` / `list_macos_certificates()` output or passed
-straight to a `thumbprint=` selector.
-
-### Expiry awareness
-
-An expired (or not-yet-valid) client certificate is the most common silent mTLS
-failure. Loading one **warns** immediately, and the session exposes its validity
-window so you can check before you depend on it:
-
-```python
-client.is_expired        # bool
-client.is_not_yet_valid  # bool
-client.expires_in        # timedelta (negative once expired)
-client.not_valid_after   # datetime (UTC)
-```
-
-Pass `warn_if_expires_within=` (accepted by every constructor, `from_*`
-included) to be told about a cert that's about to roll over, and call
-`check_validity()` to turn "not currently usable" into a hard error:
-
-```python
-from datetime import timedelta
-from httpx_pki import PKIClient, CertificateExpiredError
-
-client = PKIClient("client.p12", password="secret",
-                    warn_if_expires_within=timedelta(days=14))
-
-client.check_validity()                       # raises if expired / not yet valid
-client.check_validity(within=timedelta(days=7))  # also raises if it expires soon
-```
-
-(`check_validity` raises `CertificateExpiredError` or `CertificateNotYetValidError`.)
-
-### Filtering warnings
-
-Every warning `httpx-pki` emits carries a filterable category, all subclasses of
-`PKIWarning` (itself a `UserWarning`): `CertificateValidityWarning` (expired /
-not yet valid / expiring soon), `TLSConfigWarning` (a TLS configuration that
-likely doesn't do what was intended, e.g. a custom transport that drops the
-client cert, or `verify=False`), and `PicklingWarning` (configuration dropped
-during pickling). Silence one concern without hiding the others:
-
-```python
-import warnings
-from httpx_pki import CertificateValidityWarning
-
-warnings.filterwarnings("ignore", category=CertificateValidityWarning)
-```
-
-### Certificate rotation (hot reload)
-
-Client certificates keep getting shorter-lived — cert-manager renews a mounted
-Secret at two-thirds of its lifetime, Vault PKI issues certs measured in hours —
-but a session snapshots its certificate at construction. Without rotation
-support, a long-running process presents the stale cert until handshakes start
-failing, and the only fix is a restart.
-
-`reload()` re-reads the certificate source (file, `from_env` variables, or the
-Windows store) and swaps the fresh certificate into the mounted SSL context
-**in place**, so new handshakes — on every transport sharing the context —
-present it immediately:
-
-```python
-client = PKIClient("/etc/certs/client.pem")
-# ... /etc/certs/client.pem is rotated by cert-manager ...
-client.reload()
-```
-
-Or let the session watch for you — `auto_reload` stats the source files before
-a request (throttled, default at most once per second) and reloads when they
-change:
+Certificates keep getting shorter-lived. Warn early, reload automatically, or
+fail loudly:
 
 ```python
 from datetime import timedelta
 
-client = PKIClient("/etc/certs/client.pem", auto_reload=True)
-client = PKIClient("/etc/certs/client.pem", auto_reload=timedelta(seconds=30))
+PKIClient(
+    "/etc/certs/client.pem",
+    auto_reload=True,                            # pick up cert-manager rotations
+    strict_validity=True,                        # fail clearly, not at handshake
+    warn_if_expires_within=timedelta(days=7),
+)
 ```
 
-`strict_validity=True` completes the picture: every request is preceded by
-`check_validity()`, so a certificate that expired anyway fails with a clear
-`CertificateExpiredError` *before* the connection is attempted, instead of an
-opaque OpenSSL handshake error.
+→ [Expiry and rotation](https://httpx-pki.readthedocs.io/en/stable/guide/expiry-and-rotation.html)
 
-Semantics worth knowing:
+## Inspecting what's mounted
 
-- The swap is atomic: if the rotated file is unreadable or garbage, `reload()`
-  raises `CertificateLoadError` and the previous certificate keeps serving.
-  With `auto_reload` the error surfaces on the triggering request and is
-  retried on the next one.
-- Connections already established keep the certificate they handshook with
-  until they close (TLS has no mid-connection re-authentication); only new
-  connections present the rotated cert.
-- Rotation tooling should replace files atomically (write-then-rename), which
-  kubelet and cert-manager already do.
-- `auto_reload` requires a filesystem source to watch — construction from
-  in-memory bytes or the Windows store raises `TypeError` (the store can still
-  be re-exported with a manual `reload()`).
-- If the source is password-protected, enabling `auto_reload` retains the
-  password on the session so unattended reloads can decrypt it (see the
-  security note below). Without `auto_reload` no password is retained; pass
-  one explicitly to a manual reload: `client.reload(password="secret")`.
+```python
+client.cn                 # 'corp-user'
+client.not_valid_after    # datetime (UTC)
+client.is_expired         # bool
+client.cert_info()        # CertInfo: subject, issuer, fingerprints, usages, SANs
+```
 
-### Just the SSL context
+→ [Inspecting a certificate](https://httpx-pki.readthedocs.io/en/stable/guide/inspecting-a-certificate.html)
 
-Don't want the session wrapper? `build_ssl_context` gives you the hard part — a
-ready `ssl.SSLContext` with the client certificate mounted — to use with a plain
-`httpx.Client`, an httpx transport, or anything else that accepts a context:
+## Just the SSL context
+
+Don't want the client wrapper? `build_ssl_context()` gives you the hard part,
+ready for a plain `httpx.Client` or a custom transport:
 
 ```python
 import httpx
@@ -608,195 +168,75 @@ ctx = build_ssl_context("client.p12", password="secret")
 client = httpx.Client(verify=ctx)
 ```
 
-`build_windows_ssl_context` is the same seam for the Windows store — it selects a
-certificate exactly like `from_windows_cert_store` (`name` / `thumbprint` /
-`predicate`) but hands back the `ssl.SSLContext` instead of a session, so you can
-mount a store cert on your own transport without building a client first:
+⚠️ Passing a custom `transport=` makes httpx ignore `verify=` — put the context
+on the **inner** transport, not the client.
+
+→ [Advanced usage](https://httpx-pki.readthedocs.io/en/stable/guide/advanced.html)
+
+## Testing helpers
+
+`httpx_pki.testing` mints throwaway certificates, including multi-identity
+bundles that nothing else readily produces:
 
 ```python
-from httpx_pki import build_windows_ssl_context
-
-ctx = build_windows_ssl_context(predicate=lambda c: c.friendly_name == "prod")
-```
-
-### Custom transports (e.g. `httpx-retries`)
-
-`httpx-pki` is fully compatible with libraries that supply a custom transport,
-such as [`httpx-retries`](https://github.com/will-ockmore/httpx-retries) — but
-there is one **httpx rule** to know, and it is not specific to this library:
-
-> Whenever you pass a custom `transport=` (or `mounts=`) to an httpx client, httpx
-> uses that transport **as-is** and ignores the client-level `verify=`/`cert=`.
-> The TLS configuration — including your client certificate — must live on the
-> transport itself.
-
-So the client certificate has to be mounted on the **inner** transport that the
-retry transport wraps. `build_ssl_context()` is exactly that seam:
-
-```python
-import httpx
-from httpx_pki import build_ssl_context
-from httpx_retries import RetryTransport, Retry
-
-# ✅ WORKS — the cert lives on the inner transport the retry layer wraps
-ctx = build_ssl_context("client.p12", password="secret", verify="/etc/ssl/ca.pem")
-transport = RetryTransport(transport=httpx.HTTPTransport(verify=ctx),
-                           retry=Retry(total=5))
-client = httpx.Client(transport=transport)           # mTLS + retries
-resp = client.get("https://mtls.example.com/")
-```
-
-```python
-# ❌ DOES NOT mount the cert — the custom transport makes httpx ignore verify=,
-#    so no client certificate is presented and the handshake fails.
-from httpx_pki import PKIClient
-from httpx_retries import RetryTransport
-
-client = PKIClient("client.p12", password="secret",
-                    transport=RetryTransport())       # cert silently dropped!
-```
-
-If you specifically want your `PKIClient` *subclass* (its methods, `base_url`,
-`cert_info()`, ...) **and** retries, give that subclass the same inner transport.
-Its own `verify=` is ignored (the transport wins), but the rest of its behavior
-is preserved:
-
-```python
-ctx = build_ssl_context("client.p12", password="secret")
-inner = httpx.HTTPTransport(verify=ctx)
-client = PKIClient("client.p12", password="secret",
-                    transport=RetryTransport(transport=inner, retry=Retry(total=5)))
-```
-
-The same rule applies to any custom-transport library and to hand-built
-`mounts=` — put the TLS config on the transport, not on the client.
-
-### Mismatched key / cert
-
-When you build from a separate key and certificate (`from_key_pair` or a PEM
-bundle), `httpx-pki` checks that the private key actually matches the certificate
-and raises `CertificateLoadError` up front, instead of letting it surface later as
-an opaque OpenSSL handshake error.
-
-### Testing helpers
-
-`httpx_pki.testing` mints throwaway certificates so your own test suites don't
-have to re-derive the `cryptography` boilerplate:
-
-```python
-from httpx_pki import PKIClient
 from httpx_pki.testing import make_ca, make_client_cert
 
 ca = make_ca()
 bundle = make_client_cert("svc-client", ca=ca, dns_names=["svc.internal"])
-
-with PKIClient(bundle.pkcs12(), password=b"") as client:
-  assert client.cn == "svc-client"
-
-expired = make_client_cert("old", ca=ca, expired=True)  # for expiry tests
+expired = make_client_cert("old", ca=ca, expired=True)
 ```
 
-Minted certificates carry the extensions a real CA would issue — a
-`digitalSignature`/`keyEncipherment` KeyUsage and a `clientAuth` ExtendedKeyUsage —
-so servers that enforce EKU accept them. Override either with `key_usage=` /
-`extended_key_usage=`.
-
-`make_pkcs12` writes several identities into one bundle, which nothing else can
-do — `cryptography` and the `openssl` command line both keep a single key — so
-you can test how your code handles a dual key pair:
-
-```python
-from httpx_pki.testing import make_ca, make_client_cert, make_pkcs12
-
-ca = make_ca()
-signing = make_client_cert("me", ca=ca, key_usage=["digital_signature"])
-encryption = make_client_cert("me", ca=ca, key_usage=["key_encipherment"])
-
-blob = make_pkcs12(
-    [(signing, "Signature"), (encryption, "Encryption")], password="secret"
-)
-```
-
-The bundle is laid out the way OpenSSL and Windows write one (certificates in a
-PBES2-encrypted block, each key individually shrouded, an HMAC over the whole
-file); pass `encrypt_certs=False`, `mac=False`, or an empty password for the
-plainer variants.
+→ [Testing helpers](https://httpx-pki.readthedocs.io/en/stable/guide/testing.html)
 
 ## ⚠️ Security note on pickling
 
-To support pickling, the session stores its certificate material and
-reconstructs the live SSL context on unpickle. **The pickle therefore contains
-the decrypted private key in cleartext.** Treat a pickled session as a secret:
-do not write it to untrusted storage or transmit it over untrusted channels.
-`repr()` never reveals key material.
+To support pickling, a client stores its certificate material and rebuilds the
+SSL context on unpickle. **The pickle therefore contains the decrypted private
+key in cleartext** — treat it as a secret. `repr()` never reveals key material.
 
-The source password is never retained — with one exception: enabling
-`auto_reload` keeps it on the session (and in its pickles, which already carry
-the decrypted key) so unattended reloads can decrypt the rotated source.
+Passwords are not retained, with one exception: enabling `auto_reload` keeps the
+password on the client so unattended reloads can decrypt the rotated source.
 
-A custom `ssl.SSLContext` passed as `verify=` cannot be pickled; an unpickled
-session falls back to default server verification (with a warning). A
-certificate source that cannot be pickled (e.g. a Windows-store `predicate`
-lambda) is dropped with a warning — the unpickled session works but cannot
-`reload()`.
+→ [Security notes](https://httpx-pki.readthedocs.io/en/stable/about/security.html)
+· [SECURITY.md](https://github.com/ccbest/httpx-pki/blob/main/SECURITY.md)
 
 ## How it works
 
-Python's stdlib `ssl` cannot load PKCS#12 or in-memory key material — only cert
-chains from file paths. So `httpx-pki` uses
+Stdlib `ssl` can't load PKCS#12 or in-memory key material, so `httpx-pki` uses
 [`cryptography`](https://cryptography.io/) to extract the key and certificates,
-stages them somewhere OpenSSL can read, and passes the resulting
-`ssl.SSLContext` to httpx via `verify=` (the recommended path since httpx 0.28).
+stages them where OpenSSL can read them, and passes the resulting
+`ssl.SSLContext` to httpx via `verify=`.
 
-**On Linux, the decrypted key never touches disk**: the material is staged in
-an anonymous in-memory file (`memfd_create`) that OpenSSL reads via
-`/proc/self/fd`, and that ceases to exist the moment it's closed — nothing to
-unlink, nothing for a crash to leave behind, nothing for a temp-directory
-sweeper to catch. This matters most with `auto_reload`, where the key is
-re-staged on every certificate rotation. On other platforms — or in a rare
-Linux sandbox where memfd or procfs is unavailable — the material lands in a
-`0600` temporary PEM file just long enough for OpenSSL to read it, then is
-deleted.
+**On Linux the decrypted key never touches disk** — it's staged in an anonymous
+`memfd` that OpenSSL reads through `/proc/self/fd` and that ceases to exist when
+closed. Elsewhere it's a `0600` temp file, deleted immediately after loading.
+
+→ [How it works](https://httpx-pki.readthedocs.io/en/stable/about/how-it-works.html)
 
 ## Non-goals
 
-`httpx-pki` is scoped to credentials whose private key can be exported into
-memory. Some adjacent things it deliberately does **not** do:
+Scoped to credentials whose private key can be exported into memory. Not
+supported: **PKCS#11 / smartcards / HSMs / TPMs** (incompatible with stdlib
+`ssl`, which needs the raw key bytes), **Java keystores** (convert to PKCS#12
+with `keytool`), **workload-identity protocol clients** (point `auto_reload` at
+the files they write), and **OCSP / CRL revocation** (nothing in stdlib `ssl` to
+build on).
 
-- **PKCS#11, smartcards, HSMs, TPMs, and other non-exportable keys**
-  (YubiKeys, CAC/PIV cards, Windows keys marked non-exportable, Secure
-  Enclave). These are fundamentally incompatible with Python's `ssl` module,
-  which must hold the raw key bytes and offers no way to delegate the
-  handshake signature to external hardware. No library built on stdlib `ssl`
-  can support them; you need an OpenSSL PKCS#11 provider configured outside
-  Python.
-- **Java keystores (JKS/JCEKS).** Java itself moved to PKCS#12 as its default
-  keystore format (Java 9+). Convert once, then use the result directly:
-  `keytool -importkeystore -srckeystore client.jks -destkeystore client.p12
-  -deststoretype PKCS12`
-- **Workload-identity protocol clients (SPIFFE/SPIRE, Vault agent,
-  cert-manager).** All of these can materialize rotating PEM or PKCS#12 files,
-  which [`auto_reload`](#certificate-rotation-hot-reload) already handles — a
-  protocol integration would add heavy dependencies for no new capability.
-- **OCSP / CRL revocation checking.** Stdlib `ssl` provides nothing to build
-  on. `verify="system"` delegates verification to the OS on Windows and macOS,
-  where the platform verifier applies its own revocation policy; beyond that,
-  revocation is out of scope.
+→ [Non-goals](https://httpx-pki.readthedocs.io/en/stable/about/non-goals.html)
 
 ## Supply chain
 
-A library that handles client private keys deserves scrutiny of how it is
-built and shipped. Releases are published to PyPI exclusively from GitHub
-Actions via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
-(OIDC — no long-lived PyPI tokens) with [PEP 740](https://peps.python.org/pep-0740/)
-attestations, from a tagged commit whose version is verified against the
-package's `__version__` at build time. The runtime dependency footprint is
-limited to `httpx`, `cryptography`, and `certifi`. As with any
-security-sensitive dependency, install via a lockfile that records hashes
-(uv, poetry, or `pip-tools` with `pip install --require-hashes`).
+Released to PyPI exclusively from GitHub Actions via
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC — no
+long-lived tokens) with [PEP 740](https://peps.python.org/pep-0740/)
+attestations, from a tagged commit whose version is verified against
+`__version__` at build time. All Actions are pinned to full commit SHAs.
 
-See [SECURITY.md](https://github.com/ccbest/httpx-pki/blob/main/SECURITY.md)
-for the full policy and how to report a vulnerability.
+Install via a lockfile that records hashes, as with any security-sensitive
+dependency.
+
+→ [Supply chain](https://httpx-pki.readthedocs.io/en/stable/about/supply-chain.html)
+· [Changelog](https://github.com/ccbest/httpx-pki/blob/main/CHANGELOG.md)
 
 ## License
 

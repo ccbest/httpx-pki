@@ -23,6 +23,81 @@ the git history for the fine print.
   `verify="certifi"` (added in 0.7) pins the certifi bundle for callers who
   want the old behavior. `SSLKEYLOGFILE` is honored by every context either
   way.
+- **Breaking: `from_key_pair`'s `key_password=` is now `password=`**, the same
+  keyword every other constructor and `reload()` already used. Rename the 
+  argument at call sites: `from_key_pair(cert, key, key_password=...)` becomes
+  `from_key_pair(cert, key, password=...)`.
+- **Breaking: `CertInfo.not_before` / `not_after` are now `not_valid_before` /
+  `not_valid_after`**, matching the client properties of the same name (and
+  `cryptography`'s own vocabulary) so the two objects no longer spell the same
+  instant two ways. `httpx_pki.testing.make_client_cert()` takes the renamed
+  keywords to match, keeping mint-and-read-back symmetric.
+- **Breaking: the platform stores' `predicate=` is now `identity=`**, the same
+  keyword PKCS#12 and PEM bundles already used, on
+  `from_windows_cert_store`, `from_macos_keychain`, `build_windows_ssl_context`,
+  `build_macos_ssl_context`, `select_windows_certificate`, and
+  `select_macos_certificate`. `identity` is the library's noun everywhere else
+  (`P12Identity`, `list_identities()`, `HTTPX_PKI_IDENTITY`), and having one
+  spelling for bundles and another for stores meant `currently_valid` had to be
+  documented twice in different vocabulary. It now reads
+  `identity=currently_valid` everywhere.
+
+  On the stores `identity=` accepts everything a bundle's does *except* an
+  integer position: a store has no stable enumeration order, so a position
+  would select a different certificate from one run to the next, and it raises
+  `TypeError` rather than silently indexing. A string is a name substring or an
+  exact SHA-1/SHA-256 fingerprint, matching the bundle rule. `name=` and
+  `thumbprint=` are unchanged and remain the unambiguous spellings.
+- **New: the `_init_state()` subclass hook** — the documented seam for
+  subclasses that take constructor keywords of their own. It runs exactly once
+  on every construction path (`__init__`, every `from_*` alternate
+  constructor, and unpickling — the latter two never call `__init__`, so
+  extending `__init__` alone was not enough), receiving the extra-keyword dict
+  before it is forwarded to httpx. Pop your keywords, set your attributes;
+  what remains must be valid httpx keywords, so unclaimed arguments still fail
+  loudly. State set in the hook survives a pickle round trip automatically,
+  and `reload()`/`auto_reload` leave it untouched. See the subclassing section
+  of the advanced-usage guide.
+- **Bug fix: `warn_if_expires_within` now survives `reload()` and pickling.**
+  The window was applied once at construction and then forgotten, so the
+  early-expiry warning went permanently quiet after the first rotation — and
+  after any pickle round trip — which silently disabled the one signal the
+  documented `auto_reload` + `warn_if_expires_within` pairing exists to give a
+  long-lived service. It is now retained on the client and re-applied to the
+  *freshly loaded* certificate on every reload: a rotation onto another
+  short-lived certificate warns again, one onto a healthy certificate goes
+  quiet, and a client that never asked for the warning still never gets one.
+  The two unconditional warnings (expired, not-yet-valid) already fired on
+  reload and are unchanged.
+- **Bug fix: `reload(password=...)` no longer silently discards the password**
+  for sources that supply their own. A client built by `from_env()` reads
+  `{prefix}PASSWORD` itself, and the Windows store and macOS keychain export
+  under an internally generated single-use password — for all three the
+  argument had nothing to decrypt and was dropped without a word, so removing
+  a password from the environment and passing it to `reload()` instead failed
+  with a bare "wrong password" from a caller who had supplied one. It now
+  raises `TypeError` naming which case you are in and where the password
+  belongs, matching how `auto_reload` already rejects a source it cannot
+  watch. Reloads that pass no password are unaffected.
+- **Breaking: the certificate-source argument is now `source=` everywhere.**
+  `PKIClient(...)` / `AsyncPKIClient(...)`, `from_pkcs12`, and
+  `build_ssl_context` called it `cert=` while `from_pem`, `list_identities`,
+  and `list_pkcs12_identities` already called it `source=`; the parameter is
+  typed `CertSource` (a path, `bytes`, or `Path`, and for a bundle it holds a
+  key and chain as well as a certificate), so `source` describes it and now
+  names it everywhere. Callers passing it positionally — every example in the
+  docs — are unaffected.
+
+  This also fixes a real defect: because the constructor's first parameter was
+  named `cert`, httpx's deprecated `cert=` keyword bound to it instead of
+  reaching the guard, so `PKIClient(bundle, cert=...)` raised a bare
+  `_PKIMixin.__init__() got multiple values for argument 'cert'` — leaking a
+  private class name and explaining nothing — where every `from_*` constructor
+  gave a pointed message. The guard now fires uniformly.
+
+  `from_key_pair(certificate=..., private_key=...)` is unchanged: there
+  `certificate` really is the certificate, distinct from the key. So is
+  `cert_info(cert_pem)`, which takes PEM bytes rather than a source.
 - **truststore is now a direct required dependency** (it also arrives
   transitively with httpx2, but httpx-pki calls it directly). The `[system]`
   and `[httpx2]` extras still install but are no-ops; they are kept so

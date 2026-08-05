@@ -50,6 +50,18 @@ system = [
 httpx2 = [
     "httpx2>=2.9",
 ]
+# Sphinx + MyST: the guide is authored in Markdown, but the package docstrings
+# are reStructuredText (:class:/:meth: roles, :: literal blocks), so autodoc
+# reads them as-is and intersphinx resolves them against the stdlib and
+# cryptography docs. Read the Docs installs this via .readthedocs.yaml.
+docs = [
+    "sphinx>=8.1",
+    "furo>=2024.8.6",
+    "myst-parser>=4",
+    "linkify-it-py>=2",
+    "sphinx-copybutton>=0.5",
+    "sphinx-design>=0.6",
+]
 dev = [
     "httpx>=0.28",
     "mypy>=1.11",

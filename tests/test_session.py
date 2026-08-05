@@ -130,7 +130,7 @@ def test_cert_info_fields(client: Signed, client_p12: bytes) -> None:
         info = session.cert_info()
         assert info.common_name == CLIENT_CN
         assert info.distinguished_name == f"CN={CLIENT_CN}"
-        assert info.not_after > info.not_before
+        assert info.not_valid_after > info.not_valid_before
         assert "test-client.example.com" in info.subject_alt_names
         # Audit fields, against the ground-truth cryptography object.
         assert info.serial_number == client.cert.serial_number
@@ -272,6 +272,21 @@ def test_cert_kwarg_rejected(client: Signed) -> None:
             private_key=client.key_pem,
             cert="ignored.pem",
         )
+
+
+def test_cert_kwarg_rejected_on_every_bundle_entry_point(
+    client: Signed, client_p12: bytes
+) -> None:
+    # The source parameter is named source=, not cert=, so httpx's deprecated
+    # cert= reaches the guard on every constructor rather than binding to the
+    # first positional and producing a bare arity error naming _PKIMixin.
+    blob = client.key_pem + client.cert_pem
+    with pytest.raises(TypeError, match="httpx's cert= keyword"):
+        PKIClient(blob, cert="ignored.pem")
+    with pytest.raises(TypeError, match="httpx's cert= keyword"):
+        PKIClient.from_pkcs12(client_p12, password=P12_PASSWORD, cert="ignored.pem")
+    with pytest.raises(TypeError, match="httpx's cert= keyword"):
+        PKIClient.from_pem(blob, cert="ignored.pem")
 
 
 def test_warning_hierarchy() -> None:

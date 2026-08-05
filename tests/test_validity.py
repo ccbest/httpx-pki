@@ -44,10 +44,13 @@ def test_expired_cert_warns_on_load_and_check_raises() -> None:
 
 
 def test_not_yet_valid_cert_warns_and_check_raises() -> None:
-    not_before = _now() + datetime.timedelta(days=10)
-    not_after = _now() + datetime.timedelta(days=40)
+    not_valid_before = _now() + datetime.timedelta(days=10)
+    not_valid_after = _now() + datetime.timedelta(days=40)
     bundle = make_client_cert(
-        "c", ca=make_ca(), not_before=not_before, not_after=not_after
+        "c",
+        ca=make_ca(),
+        not_valid_before=not_valid_before,
+        not_valid_after=not_valid_after,
     )
     with pytest.warns(CertificateValidityWarning, match="not valid until"):
         session = PKIClient(bundle.pkcs12())
@@ -60,8 +63,8 @@ def test_not_yet_valid_cert_warns_and_check_raises() -> None:
 
 
 def test_warn_if_expires_within_fires() -> None:
-    not_after = _now() + datetime.timedelta(days=5)
-    bundle = make_client_cert("c", ca=make_ca(), not_after=not_after)
+    not_valid_after = _now() + datetime.timedelta(days=5)
+    bundle = make_client_cert("c", ca=make_ca(), not_valid_after=not_valid_after)
     with pytest.warns(CertificateValidityWarning, match="expires on"):
         session = PKIClient(
             bundle.pkcs12(), warn_if_expires_within=datetime.timedelta(days=10)
@@ -77,8 +80,8 @@ def test_warn_if_expires_within_on_alternate_constructors(
 ) -> None:
     # warn_if_expires_within is an explicit parameter of every alternate
     # constructor, not something that happens to fall through **kwargs.
-    not_after = _now() + datetime.timedelta(days=5)
-    bundle = make_client_cert("c", ca=make_ca(), not_after=not_after)
+    not_valid_after = _now() + datetime.timedelta(days=5)
+    bundle = make_client_cert("c", ca=make_ca(), not_valid_after=not_valid_after)
     within = datetime.timedelta(days=10)
     with pytest.warns(CertificateValidityWarning, match="expires on"):
         if constructor == "from_pkcs12":
@@ -104,8 +107,8 @@ def test_warn_if_expires_within_on_alternate_constructors(
 
 
 def test_check_validity_within_window_raises() -> None:
-    not_after = _now() + datetime.timedelta(days=5)
-    bundle = make_client_cert("c", ca=make_ca(), not_after=not_after)
+    not_valid_after = _now() + datetime.timedelta(days=5)
+    bundle = make_client_cert("c", ca=make_ca(), not_valid_after=not_valid_after)
     with PKIClient(bundle.pkcs12()) as session:
         session.check_validity()  # currently valid -> ok
         with pytest.raises(CertificateExpiredError, match="within"):
@@ -122,3 +125,93 @@ def test_warn_if_expires_within_silent_when_far_off() -> None:
             bundle.pkcs12(), warn_if_expires_within=datetime.timedelta(days=10)
         )
     session.close()
+
+
+def test_warn_if_expires_within_survives_reload(tmp_path: Path) -> None:
+    # The window is retained on the client, so a rotated certificate is judged
+    # against the same threshold the session was built with. Without this the
+    # warning goes quiet after the first rotation -- exactly when the
+    # auto_reload + warn_if_expires_within pairing is meant to be watching.
+    ca = make_ca()
+    path = tmp_path / "client.pem"
+    path.write_bytes(
+        make_client_cert(
+            "c", ca=ca, not_valid_after=_now() + datetime.timedelta(days=5)
+        ).pem
+    )
+    within = datetime.timedelta(days=10)
+    with pytest.warns(CertificateValidityWarning, match="expires on"):
+        session = PKIClient(path, warn_if_expires_within=within)
+    try:
+        # A rotation that lands another short-lived certificate must warn again.
+        path.write_bytes(
+            make_client_cert(
+                "c", ca=ca, not_valid_after=_now() + datetime.timedelta(days=6)
+            ).pem
+        )
+        with pytest.warns(CertificateValidityWarning, match="expires on"):
+            session.reload()
+    finally:
+        session.close()
+
+
+def test_reload_reevaluates_the_window_against_the_new_cert(
+    tmp_path: Path,
+) -> None:
+    # The window is re-applied to the fresh certificate, not replayed: rotating
+    # to a comfortably-valid one must go quiet again.
+    import warnings
+
+    ca = make_ca()
+    path = tmp_path / "client.pem"
+    path.write_bytes(
+        make_client_cert(
+            "c", ca=ca, not_valid_after=_now() + datetime.timedelta(days=5)
+        ).pem
+    )
+    with pytest.warns(CertificateValidityWarning, match="expires on"):
+        session = PKIClient(path, warn_if_expires_within=datetime.timedelta(days=10))
+    try:
+        path.write_bytes(make_client_cert("c", ca=ca).pem)  # ~365 days
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            session.reload()
+    finally:
+        session.close()
+
+
+def test_reload_without_a_window_stays_silent(tmp_path: Path) -> None:
+    # A client that never asked for the early warning must not start getting
+    # one from the reload path.
+    import warnings
+
+    ca = make_ca()
+    path = tmp_path / "client.pem"
+    path.write_bytes(
+        make_client_cert(
+            "c", ca=ca, not_valid_after=_now() + datetime.timedelta(days=5)
+        ).pem
+    )
+    with PKIClient(path) as session:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            session.reload()
+
+
+def test_warn_if_expires_within_survives_pickle() -> None:
+    import pickle
+
+    bundle = make_client_cert(
+        "c", ca=make_ca(), not_valid_after=_now() + datetime.timedelta(days=5)
+    )
+    with pytest.warns(CertificateValidityWarning, match="expires on"):
+        session = PKIClient(
+            bundle.pkcs12(), warn_if_expires_within=datetime.timedelta(days=10)
+        )
+    try:
+        payload = pickle.dumps(session)
+    finally:
+        session.close()
+    with pytest.warns(CertificateValidityWarning, match="expires on"):
+        restored = pickle.loads(payload)
+    restored.close()

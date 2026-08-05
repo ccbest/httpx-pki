@@ -82,14 +82,14 @@ def select_macos_certificate(  # pylint: disable=too-many-arguments
     *,
     name: str | None = None,
     thumbprint: str | None = None,
-    predicate: MacPredicate | None = None,
+    identity: str | MacPredicate | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
 ) -> MacCert:
     """Choose a single certificate from *candidates*.
 
     Every selector given must match: an exact ``thumbprint`` (SHA-1; colons,
-    spaces, and case are ignored), a ``predicate`` callable, a case-insensitive
+    spaces, and case are ignored), an ``identity``, a case-insensitive
     ``name`` substring matched against the subject common name and the keychain
     label, and the ``key_usage`` / ``extended_key_usage`` the certificate must
     assert -- which is how the two halves of a dual key pair in one keychain
@@ -103,7 +103,7 @@ def select_macos_certificate(  # pylint: disable=too-many-arguments
         candidates,
         name=name,
         thumbprint=thumbprint,
-        predicate=predicate,
+        identity=identity,
         aliases=lambda c: (c.subject_cn, c.label),
         key_usage=key_usage,
         extended_key_usage=extended_key_usage,
@@ -135,7 +135,7 @@ def load_macos_pkcs12(  # pylint: disable=too-many-arguments
     *,
     name: str | None = None,
     thumbprint: str | None = None,
-    predicate: MacPredicate | None = None,
+    identity: str | MacPredicate | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
 ) -> tuple[bytes, bytes, str]:
@@ -156,7 +156,7 @@ def load_macos_pkcs12(  # pylint: disable=too-many-arguments
             candidates,
             name=name,
             thumbprint=thumbprint,
-            predicate=predicate,
+            identity=identity,
             key_usage=key_usage,
             extended_key_usage=extended_key_usage,
         )

@@ -77,11 +77,35 @@ def test_select_by_thumbprint_with_separators() -> None:
     assert chosen.subject_cn == "ACME Dev Client"
 
 
-def test_select_by_predicate() -> None:
+def test_select_by_identity_predicate() -> None:
     chosen = select_windows_certificate(
-        CANDIDATES, predicate=lambda c: c.friendly_name == "prod"
+        CANDIDATES, identity=lambda c: c.friendly_name == "prod"
     )
     assert chosen.thumbprint == "AA11BB"
+
+
+def test_select_by_identity_name_substring() -> None:
+    # identity= takes the same string a bundle's identity= does: a name
+    # substring, so the spelling ports between a .p12 and the store.
+    chosen = select_windows_certificate(CANDIDATES, identity="prod")
+    assert chosen.thumbprint == "AA11BB"
+
+
+def test_select_by_identity_full_thumbprint() -> None:
+    # A full-length hex digest is an exact fingerprint match, not a substring.
+    full = "A" * 40
+    record = WinCert(
+        subject_cn="digest-user", friendly_name="digest", thumbprint=full
+    )
+    chosen = select_windows_certificate([record, *CANDIDATES], identity=full)
+    assert chosen.subject_cn == "digest-user"
+
+
+def test_select_by_identity_rejects_an_integer() -> None:
+    # A store has no stable ordering, so a positional identity= would select a
+    # different certificate run to run. It must be refused, not silently used.
+    with pytest.raises(TypeError, match="no stable ordering"):
+        select_windows_certificate(CANDIDATES, identity=0)
 
 
 def test_select_no_selector_single_candidate() -> None:
@@ -159,7 +183,7 @@ def test_build_windows_ssl_context_mocked(
     monkeypatch.setattr(winstore, "_export_pfx", fake_export)
     monkeypatch.setattr(winstore.sys, "platform", "win32")
 
-    ctx = build_windows_ssl_context(predicate=lambda c: "internal" in c.friendly_name)
+    ctx = build_windows_ssl_context(identity=lambda c: "internal" in c.friendly_name)
     assert isinstance(ctx, ssl.SSLContext)
 
 
@@ -360,35 +384,35 @@ def _record(bundle: CertBundle, friendly_name: str) -> WinCert:
     )
 
 
-def test_predicate_currently_valid_skips_the_expired_copy() -> None:
+def test_identity_currently_valid_skips_the_expired_copy() -> None:
     # A store keeps the expired certificate alongside its renewal; the
     # ready-made selector picks the one that works right now.
     cn = "ACME Renewed User"
     old = make_client_cert(cn, expired=True)
     new = make_client_cert(cn)
     chosen = select_windows_certificate(
-        [_record(old, "old"), _record(new, "new")], predicate=currently_valid
+        [_record(old, "old"), _record(new, "new")], identity=currently_valid
     )
     assert chosen.friendly_name == "new"
 
 
-def test_predicate_currently_valid_prefers_the_later_window() -> None:
+def test_identity_currently_valid_prefers_the_later_window() -> None:
     # Renewal overlap: both are valid and otherwise interchangeable, so the
     # tie resolves to the later window.
     now = datetime.datetime.now(datetime.timezone.utc)
     cn = "ACME Overlap User"
-    old = make_client_cert(cn, not_after=now + datetime.timedelta(days=20))
+    old = make_client_cert(cn, not_valid_after=now + datetime.timedelta(days=20))
     new = make_client_cert(cn)
     chosen = select_windows_certificate(
-        [_record(old, "old"), _record(new, "new")], predicate=currently_valid
+        [_record(old, "old"), _record(new, "new")], identity=currently_valid
     )
     assert chosen.friendly_name == "new"
 
 
-def test_predicate_currently_valid_never_matches_unreadable_records() -> None:
+def test_identity_currently_valid_never_matches_unreadable_records() -> None:
     # A record whose certificate could not be read cannot prove validity.
     with pytest.raises(CertificateNotFoundError):
-        select_windows_certificate(CANDIDATES, predicate=currently_valid)
+        select_windows_certificate(CANDIDATES, identity=currently_valid)
 
 
 # -- CERT_CONTEXT reading (simulated; the real struct is Windows-only) --------

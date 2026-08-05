@@ -70,13 +70,13 @@ def select_windows_certificate(  # pylint: disable=too-many-arguments
     *,
     name: str | None = None,
     thumbprint: str | None = None,
-    predicate: Predicate | None = None,
+    identity: str | Predicate | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
 ) -> WinCert:
     """Choose a single certificate from *candidates*.
 
-    Every selector given must match: an exact ``thumbprint``, a ``predicate``
+    Every selector given must match: an exact ``thumbprint``, an ``identity``
     callable, a case-insensitive ``name`` substring matched against the subject
     common name and the Windows friendly name, and the ``key_usage`` /
     ``extended_key_usage`` the certificate must assert -- which is how the two
@@ -90,7 +90,7 @@ def select_windows_certificate(  # pylint: disable=too-many-arguments
         candidates,
         name=name,
         thumbprint=thumbprint,
-        predicate=predicate,
+        identity=identity,
         aliases=lambda c: (c.subject_cn, c.friendly_name),
         key_usage=key_usage,
         extended_key_usage=extended_key_usage,
@@ -125,7 +125,7 @@ def load_windows_pkcs12(  # pylint: disable=too-many-arguments
     *,
     name: str | None = None,
     thumbprint: str | None = None,
-    predicate: Predicate | None = None,
+    identity: str | Predicate | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
     store: str = "MY",
@@ -148,7 +148,7 @@ def load_windows_pkcs12(  # pylint: disable=too-many-arguments
             candidates,
             name=name,
             thumbprint=thumbprint,
-            predicate=predicate,
+            identity=identity,
             key_usage=key_usage,
             extended_key_usage=extended_key_usage,
         )

@@ -554,7 +554,7 @@ def test_renewal_selecting_the_valid_certificate(
     blob, _expiring, renewed = renewal_p12
     now = datetime.datetime.now(datetime.timezone.utc)
     with PKIClient(
-        blob, password=P12_PASSWORD, identity=lambda i: i.info.not_after > now
+        blob, password=P12_PASSWORD, identity=lambda i: i.info.not_valid_after > now
     ) as session:
         assert session.certificate.serial_number == renewed.cert.serial_number
         assert not session.is_expired
@@ -610,8 +610,8 @@ def test_currently_valid_skips_the_not_yet_valid_certificate(
     future = make_client_cert(
         "future-user",
         ca=ca_bundle,
-        not_before=now + datetime.timedelta(days=30),
-        not_after=now + datetime.timedelta(days=400),
+        not_valid_before=now + datetime.timedelta(days=30),
+        not_valid_after=now + datetime.timedelta(days=400),
     )
     blob = make_pkcs12([(current, "now"), (future, "next")], password=P12_PASSWORD)
     with PKIClient(
@@ -628,7 +628,7 @@ def test_currently_valid_prefers_the_renewed_during_overlap(
     # tie resolves to the later window.
     now = datetime.datetime.now(datetime.timezone.utc)
     old = make_client_cert(
-        "overlap-user", ca=ca_bundle, not_after=now + datetime.timedelta(days=20)
+        "overlap-user", ca=ca_bundle, not_valid_after=now + datetime.timedelta(days=20)
     )
     new = make_client_cert("overlap-user", ca=ca_bundle)
     blob = make_pkcs12([(old, "old"), (new, "new")], password=P12_PASSWORD)

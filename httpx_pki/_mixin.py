@@ -72,6 +72,40 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+# Source kinds whose material is not decrypted with a caller-supplied
+# password: ``env`` reads its own password variable along with the rest of the
+# configuration, and the platform stores export under an internally generated
+# single-use password. Passing one to reload() for these is always a mistake,
+# so it is refused rather than silently discarded.
+_PASSWORDLESS_SOURCES = ("env", "winstore", "macos_keychain")
+
+
+def _no_password_message(source: SourceRef) -> str:
+    """Why ``reload(password=...)`` cannot apply to *source*.
+
+    The two cases fail for different reasons and have different fixes, so the
+    message says which one the caller is in rather than only that the password
+    was not used.
+    """
+    if source.kind == "env":
+        prefix = source.args.get("prefix", "HTTPX_PKI_")
+        return (
+            "reload(password=...) does not apply to a from_env() client: the "
+            f"password is read from {prefix}PASSWORD along with the rest of "
+            "the configuration. Set that variable instead of passing one here."
+        )
+    store = (
+        "the Windows certificate store"
+        if source.kind == "winstore"
+        else "the macOS keychain"
+    )
+    return (
+        f"reload(password=...) does not apply to a client built from {store}: "
+        "the certificate is exported under an internally generated single-use "
+        "password, so there is none to supply. Drop the argument."
+    )
+
+
 def _mount_shadows_tls(pattern: object) -> bool:
     """Whether an httpx mount pattern would handle https traffic.
 
@@ -86,6 +120,11 @@ def _mount_shadows_tls(pattern: object) -> bool:
 class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     _material: Material
     _verify_policy: VerifyTypes
+    # Snapshot of the constructor's extra keywords taken BEFORE _init_state
+    # pops subclass extras -- so it may hold more than httpx keywords. It is
+    # serialized as-is by __getstate__, and __setstate__ replays it through
+    # _apply_material (re-running the hook); snapshotting post-pop would
+    # silently break subclass pickling.
     _httpx_kwargs: dict[str, Any]
     # Parsed once from _material.cert_pem in _apply_material. Parsing is pure, so
     # caching it is invisible (the time-dependent checks recompute "now"
@@ -103,6 +142,10 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     _source: SourceRef | None
     _auto_reload: datetime.timedelta | None
     _strict_validity: bool
+    # The warn_if_expires_within window, retained so a rotated certificate is
+    # judged against the same threshold the client was built with -- reload()
+    # re-evaluates it, and it is carried across pickling. None disables it.
+    _warn_within: datetime.timedelta | None
     _reload_lock: threading.Lock
     _watch_paths: list[Path]
     _watch_sig: WatchSignature
@@ -114,7 +157,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
     def __init__(  # pylint: disable=too-many-arguments
         self,
-        cert: CertSource,
+        source: CertSource,
         password: Password = None,
         *,
         verify: VerifyTypes = True,
@@ -132,12 +175,12 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
-        material = load_material(read_source(cert), encoded, **selectors)
+        material = load_material(read_source(source), encoded, **selectors)
         self._apply_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("auto", {"cert": cert, **selectors}, encoded),
+            source=SourceRef("auto", {"source": source, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -154,12 +197,22 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         strict_validity: bool = False,
         **kwargs: Any,
     ) -> None:
+        """The shared in-place constructor body.
+
+        Runs exactly once for every path that builds a client -- ``__init__``,
+        ``_from_material`` (behind every ``from_*`` alternate constructor),
+        and ``__setstate__`` -- validating the config, initializing all mixin
+        state (including the :meth:`_init_state` subclass hook), and forwarding
+        the leftover *kwargs* to the httpx base class via ``_httpx_init``.
+        :meth:`reload` never calls this; it swaps certificate material into
+        the mounted SSL context in place.
+        """
         if "cert" in kwargs:
             raise TypeError(
-                "pass the client certificate to the constructor's cert source, "
-                "not via httpx's cert= keyword: httpx deprecated cert= in 0.28, "
-                "and it would collide with the SSL context httpx-pki mounts on "
-                "verify=."
+                "pass the client certificate as the constructor's source= "
+                "argument, not via httpx's cert= keyword: httpx deprecated "
+                "cert= in 0.28, and it would collide with the SSL context "
+                "httpx-pki mounts on verify=."
             )
         # timedelta(0) means "check on every request", so test identity/type,
         # not truthiness (bool(timedelta(0)) is False).
@@ -188,11 +241,15 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         self._material = material
         self._verify_policy = verify
-        self._httpx_kwargs = kwargs
+        # Snapshot BEFORE _init_state pops its extras -- see the _httpx_kwargs
+        # annotation for why the pre-pop set is the one pickled.
+        self._httpx_kwargs = dict(kwargs)
+        self._init_state(kwargs)
         self._certinfo = cert_info(material.cert_pem)
         self._source = source
         self._auto_reload = interval
         self._strict_validity = strict_validity
+        self._warn_within = warn_if_expires_within
         self._reload_lock = threading.Lock()
         self._watch_paths = watch_paths(source) if source is not None else []
         self._watch_sig = stat_signature(self._watch_paths)
@@ -202,9 +259,40 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             else 0.0
         )
         self._warn_on_ignored_tls(kwargs)
-        self._warn_on_validity(warn_if_expires_within)
+        self._warn_on_validity(self._warn_within)
         self._ssl_context = _context_from_material(material, verify)
         self._httpx_init(verify=self._ssl_context, **kwargs)
+
+    def _init_state(self, kwargs: dict[str, Any]) -> None:
+        """Subclass hook: claim constructor keywords and set up extra state.
+
+        Runs exactly once on every path that builds a session -- ``__init__``,
+        every ``from_*`` alternate constructor, and unpickling -- before the
+        remaining *kwargs* are forwarded to the httpx base class. ``pop()``
+        your subclass's keywords out of *kwargs* (it is mutated in place) and
+        assign your attributes; anything left over must be a keyword httpx
+        accepts. Popping with a default keeps the attributes present on every
+        path, including the constructors a caller passes no extras to::
+
+            class TracedClient(PKIClient):
+                def _init_state(self, kwargs):
+                    self.trace_header = kwargs.pop("trace_header", "X-Trace-Id")
+
+            TracedClient("client.p12", trace_header="X-Request-Id")
+            TracedClient.from_env()   # trace_header defaults to "X-Trace-Id"
+
+        The full keyword set is snapshotted for pickling before this hook
+        runs, and an unpickled client re-runs the hook with the original
+        keywords -- state set here survives a pickle round trip with no extra
+        code, as long as the values are themselves picklable.
+        :meth:`reload` and ``auto_reload`` swap certificate material in place
+        and do **not** re-run this hook.
+
+        Do not rely on other session state here: the hook runs mid-
+        construction, before the httpx base class is initialized. When
+        subclassing a subclass, chain with ``super()._init_state(kwargs)``.
+        The base implementation does nothing.
+        """
 
     @classmethod
     def _from_material(  # pylint: disable=too-many-arguments
@@ -274,7 +362,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     @classmethod
     def from_pkcs12(  # pylint: disable=too-many-arguments
         cls: type[_S],
-        cert: CertSource,
+        source: CertSource,
         password: Password = None,
         *,
         verify: VerifyTypes = True,
@@ -316,12 +404,12 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
-        material = parse_pkcs12(read_source(cert), encoded, **selectors)
+        material = parse_pkcs12(read_source(source), encoded, **selectors)
         return cls._from_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("pkcs12", {"cert": cert, **selectors}, encoded),
+            source=SourceRef("pkcs12", {"source": source, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -377,7 +465,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         certificate: CertSource,
         private_key: CertSource,
         *,
-        key_password: Password = None,
+        password: Password = None,
         chain: CertSource | list[CertSource] | None = None,
         verify: VerifyTypes = True,
         warn_if_expires_within: datetime.timedelta | None = None,
@@ -390,11 +478,14 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         *certificate* is the client (leaf) certificate. Pass *chain* to present
         intermediate certificates to the server: a single source (which may
         concatenate several PEM certs) or a list of sources.
+        *password* decrypts *private_key* if it is encrypted; certificates are
+        never encrypted, so it is the same *password* every other constructor
+        takes.
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
         """
-        encoded = encode_password(key_password)
-        material = normalize_pem(certificate, private_key, key_password, chain)
+        encoded = encode_password(password)
+        material = normalize_pem(certificate, private_key, password, chain)
         return cls._from_material(
             material,
             verify=verify,
@@ -419,7 +510,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         name: str | None = None,
         *,
         thumbprint: str | None = None,
-        predicate: MacPredicate | None = None,
+        identity: str | MacPredicate | None = None,
         key_usage: UsageSelector | None = None,
         extended_key_usage: UsageSelector | None = None,
         verify: VerifyTypes = True,
@@ -431,12 +522,13 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         macOS only. Selects the identity from the default keychain search list
         by ``name`` (case-insensitive substring of the subject common name or
-        keychain label), ``thumbprint``, a ``predicate`` callable, or the
+        keychain label), ``thumbprint``, ``identity`` (a name substring, an
+        exact fingerprint, or a predicate callable), or the
         ``key_usage`` / ``extended_key_usage`` the certificate must assert;
         every selector given must match. A keychain holding both halves of a
         dual key pair needs the usage to choose between them, and one holding a
         renewed certificate alongside the one it replaces can take
-        ``predicate=httpx_pki.currently_valid``::
+        ``identity=httpx_pki.currently_valid``::
 
             AsyncPKIClient.from_macos_keychain(
                 "corp-user", key_usage="digital_signature"
@@ -459,7 +551,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         selector: dict[str, Any] = {
             "name": name,
             "thumbprint": thumbprint,
-            "predicate": predicate,
+            "identity": identity,
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
@@ -479,7 +571,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         name: str | None = None,
         *,
         thumbprint: str | None = None,
-        predicate: Predicate | None = None,
+        identity: str | Predicate | None = None,
         key_usage: UsageSelector | None = None,
         extended_key_usage: UsageSelector | None = None,
         store: str = "MY",
@@ -493,12 +585,13 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         Windows only. Selects the certificate by ``name`` (case-insensitive
         substring of the subject common name or friendly name), ``thumbprint``,
-        a ``predicate`` callable, or the ``key_usage`` / ``extended_key_usage``
+        ``identity`` (a name substring, an exact fingerprint, or a predicate
+        callable), or the ``key_usage`` / ``extended_key_usage``
         the certificate must assert; every selector given must match. A store
         holding both halves of a dual key pair -- what Active Directory key
         archival provisions -- needs the usage to choose between them, and one
         holding a renewed certificate alongside the one it replaces can take
-        ``predicate=httpx_pki.currently_valid``::
+        ``identity=httpx_pki.currently_valid``::
 
             PKIClient.from_windows_cert_store(
                 "corp-user", key_usage="digital_signature"
@@ -519,7 +612,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         selector: dict[str, Any] = {
             "name": name,
             "thumbprint": thumbprint,
-            "predicate": predicate,
+            "identity": identity,
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
             "store": store,
@@ -540,12 +633,12 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     @property
     def not_valid_before(self) -> datetime.datetime:
         """Start of the client certificate's validity window (UTC)."""
-        return self._certinfo.not_before
+        return self._certinfo.not_valid_before
 
     @property
     def not_valid_after(self) -> datetime.datetime:
         """End of the client certificate's validity window (UTC)."""
-        return self._certinfo.not_after
+        return self._certinfo.not_valid_after
 
     @property
     def is_expired(self) -> bool:
@@ -575,17 +668,17 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         """
         info = self._certinfo
         now = _utcnow()
-        not_before = f"{info.not_before:%Y-%m-%d %H:%M UTC}"
-        not_after = f"{info.not_after:%Y-%m-%d %H:%M UTC}"
-        if now < info.not_before:
+        not_before = f"{info.not_valid_before:%Y-%m-%d %H:%M UTC}"
+        not_after = f"{info.not_valid_after:%Y-%m-%d %H:%M UTC}"
+        if now < info.not_valid_before:
             raise CertificateNotYetValidError(
                 f"client certificate is not valid until {not_before}"
             )
-        if now > info.not_after:
+        if now > info.not_valid_after:
             raise CertificateExpiredError(
                 f"client certificate expired on {not_after}"
             )
-        if within is not None and info.not_after - now <= within:
+        if within is not None and info.not_valid_after - now <= within:
             raise CertificateExpiredError(
                 f"client certificate expires on {not_after}, within {within}"
             )
@@ -604,16 +697,29 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         The swap is atomic: if the new material cannot be loaded
         (:class:`~httpx_pki.CertificateLoadError`), the client keeps serving
-        the previous certificate. Pass *password* if the source is encrypted
-        and the client was not built with ``auto_reload`` (which is the only
-        mode that retains the password). Raises :class:`TypeError` for a
-        client built from in-memory bytes -- there is no source to re-read.
+        the previous certificate. Pass *password* if the source is a file or
+        bundle that is encrypted and the client was not built with
+        ``auto_reload`` (which is the only mode that retains the password).
+
+        The freshly loaded certificate is put through the same validity checks
+        the constructor ran, against the ``warn_if_expires_within`` window the
+        client was built with -- so a rotation that lands another short-lived
+        certificate warns again, and one that lands a healthy certificate goes
+        quiet.
+
+        Raises :class:`TypeError` for a client built from in-memory bytes
+        (there is no source to re-read), and for a *password* passed to a
+        source that has none to use: ``from_env`` reads ``{prefix}PASSWORD``
+        itself, and the Windows store and macOS keychain export under an
+        internal single-use password.
         """
         if self._source is None or not is_reloadable(self._source):
             raise TypeError(
                 "this client was built from in-memory bytes; there is no "
                 "certificate source to reload from"
             )
+        if password is not None and self._source.kind in _PASSWORDLESS_SOURCES:
+            raise TypeError(_no_password_message(self._source))
         with self._reload_lock:
             # Fingerprint the watched files BEFORE reading them: if another
             # rotation lands between the read and the fingerprint, recording
@@ -625,7 +731,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             self._material = material
             self._certinfo = cert_info(material.cert_pem)
             self._watch_sig = sig_before
-            self._warn_on_validity(None)
+            self._warn_on_validity(self._warn_within)
 
     def _preflight(self) -> None:
         """Per-request hook run by ``send()``: auto-reload, then validity.
@@ -677,27 +783,28 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     ) -> None:
         info = self._certinfo
         now = _utcnow()
-        if now > info.not_after:
+        if now > info.not_valid_after:
             warnings.warn(
-                f"client certificate expired on {info.not_after:%Y-%m-%d}; "
+                f"client certificate expired on {info.not_valid_after:%Y-%m-%d}; "
                 "mTLS handshakes will fail.",
                 CertificateValidityWarning,
                 stacklevel=3,
             )
-        elif now < info.not_before:
+        elif now < info.not_valid_before:
+            starts = f"{info.not_valid_before:%Y-%m-%d}"
             warnings.warn(
-                f"client certificate is not valid until {info.not_before:%Y-%m-%d}; "
+                f"client certificate is not valid until {starts}; "
                 "mTLS handshakes will fail until then.",
                 CertificateValidityWarning,
                 stacklevel=3,
             )
         elif (
             warn_if_expires_within is not None
-            and info.not_after - now <= warn_if_expires_within
+            and info.not_valid_after - now <= warn_if_expires_within
         ):
-            days = (info.not_after - now).days
+            days = (info.not_valid_after - now).days
             warnings.warn(
-                f"client certificate expires on {info.not_after:%Y-%m-%d} "
+                f"client certificate expires on {info.not_valid_after:%Y-%m-%d} "
                 f"(in {days} day(s)).",
                 CertificateValidityWarning,
                 stacklevel=3,
@@ -793,6 +900,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "source": source,
             "auto_reload": auto_reload,
             "strict_validity": self._strict_validity,
+            "warn_if_expires_within": self._warn_within,
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -803,6 +911,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             source=state.get("source"),
             auto_reload=state.get("auto_reload", False),
             strict_validity=state.get("strict_validity", False),
+            warn_if_expires_within=state.get("warn_if_expires_within"),
             **state["httpx_kwargs"],
         )
 
@@ -811,5 +920,5 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         return (
             f"<{type(self).__name__} "
             f"cn={info.common_name!r} "
-            f"expires={info.not_after:%Y-%m-%d}>"
+            f"expires={info.not_valid_after:%Y-%m-%d}>"
         )
