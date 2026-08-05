@@ -42,6 +42,13 @@ CertificateValidityWarning: client certificate expires on 2026-08-07
 (in 4 day(s)).
 ```
 
+The window is kept on the client, so it keeps applying for the client's
+lifetime: every [reload](#reloading-a-rotated-certificate) re-checks the
+*freshly loaded* certificate against it, and it survives pickling. A rotation
+that lands another short-lived certificate warns again; one that lands a
+healthy certificate goes quiet. That is what makes it useful next to
+`auto_reload` — see [](#strict-validity).
+
 To check on demand rather than be warned, the validity properties and
 `check_validity()` are covered in [](inspecting-a-certificate.md).
 

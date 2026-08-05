@@ -142,6 +142,10 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     _source: SourceRef | None
     _auto_reload: datetime.timedelta | None
     _strict_validity: bool
+    # The warn_if_expires_within window, retained so a rotated certificate is
+    # judged against the same threshold the client was built with -- reload()
+    # re-evaluates it, and it is carried across pickling. None disables it.
+    _warn_within: datetime.timedelta | None
     _reload_lock: threading.Lock
     _watch_paths: list[Path]
     _watch_sig: WatchSignature
@@ -245,6 +249,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         self._source = source
         self._auto_reload = interval
         self._strict_validity = strict_validity
+        self._warn_within = warn_if_expires_within
         self._reload_lock = threading.Lock()
         self._watch_paths = watch_paths(source) if source is not None else []
         self._watch_sig = stat_signature(self._watch_paths)
@@ -254,7 +259,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             else 0.0
         )
         self._warn_on_ignored_tls(kwargs)
-        self._warn_on_validity(warn_if_expires_within)
+        self._warn_on_validity(self._warn_within)
         self._ssl_context = _context_from_material(material, verify)
         self._httpx_init(verify=self._ssl_context, **kwargs)
 
@@ -696,6 +701,12 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         bundle that is encrypted and the client was not built with
         ``auto_reload`` (which is the only mode that retains the password).
 
+        The freshly loaded certificate is put through the same validity checks
+        the constructor ran, against the ``warn_if_expires_within`` window the
+        client was built with -- so a rotation that lands another short-lived
+        certificate warns again, and one that lands a healthy certificate goes
+        quiet.
+
         Raises :class:`TypeError` for a client built from in-memory bytes
         (there is no source to re-read), and for a *password* passed to a
         source that has none to use: ``from_env`` reads ``{prefix}PASSWORD``
@@ -720,7 +731,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             self._material = material
             self._certinfo = cert_info(material.cert_pem)
             self._watch_sig = sig_before
-            self._warn_on_validity(None)
+            self._warn_on_validity(self._warn_within)
 
     def _preflight(self) -> None:
         """Per-request hook run by ``send()``: auto-reload, then validity.
@@ -889,6 +900,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "source": source,
             "auto_reload": auto_reload,
             "strict_validity": self._strict_validity,
+            "warn_if_expires_within": self._warn_within,
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -899,6 +911,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             source=state.get("source"),
             auto_reload=state.get("auto_reload", False),
             strict_validity=state.get("strict_validity", False),
+            warn_if_expires_within=state.get("warn_if_expires_within"),
             **state["httpx_kwargs"],
         )
 

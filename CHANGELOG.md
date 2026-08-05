@@ -58,6 +58,17 @@ the git history for the fine print.
   loudly. State set in the hook survives a pickle round trip automatically,
   and `reload()`/`auto_reload` leave it untouched. See the subclassing section
   of the advanced-usage guide.
+- **Bug fix: `warn_if_expires_within` now survives `reload()` and pickling.**
+  The window was applied once at construction and then forgotten, so the
+  early-expiry warning went permanently quiet after the first rotation — and
+  after any pickle round trip — which silently disabled the one signal the
+  documented `auto_reload` + `warn_if_expires_within` pairing exists to give a
+  long-lived service. It is now retained on the client and re-applied to the
+  *freshly loaded* certificate on every reload: a rotation onto another
+  short-lived certificate warns again, one onto a healthy certificate goes
+  quiet, and a client that never asked for the warning still never gets one.
+  The two unconditional warnings (expired, not-yet-valid) already fired on
+  reload and are unchanged.
 - **Bug fix: `reload(password=...)` no longer silently discards the password**
   for sources that supply their own. A client built by `from_env()` reads
   `{prefix}PASSWORD` itself, and the Windows store and macOS keychain export
