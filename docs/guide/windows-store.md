@@ -165,6 +165,16 @@ certificate that has been renewed in place:
 client.reload()
 ```
 
+No password is involved, so `reload()` takes none. Passing one raises rather
+than being silently ignored, since the export uses an internal single-use
+password:
+
+```text
+TypeError: reload(password=...) does not apply to a client built from the
+Windows certificate store: the certificate is exported under an internally
+generated single-use password, so there is none to supply. Drop the argument.
+```
+
 See [](expiry-and-rotation.md).
 
 ## Just the SSL context

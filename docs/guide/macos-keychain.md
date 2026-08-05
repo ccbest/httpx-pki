@@ -152,6 +152,16 @@ re-exports from the keychain with the same selector:
 client.reload()
 ```
 
+No password is involved, so `reload()` takes none. Passing one raises rather
+than being silently ignored, since the export uses an internal single-use
+password:
+
+```text
+TypeError: reload(password=...) does not apply to a client built from the
+macOS keychain: the certificate is exported under an internally generated
+single-use password, so there is none to supply. Drop the argument.
+```
+
 Note that a re-export can prompt for consent again unless access was
 pre-granted — see [](#export-requires-consent). See also
 [](expiry-and-rotation.md).

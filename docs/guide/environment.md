@@ -142,6 +142,16 @@ variables named when the session was built:
 client = PKIClient.from_env(auto_reload=True)
 ```
 
+Because the password comes from `HTTPX_PKI_PASSWORD` along with everything
+else, `reload()` takes no `password=` here — passing one raises rather than
+being silently ignored:
+
+```text
+TypeError: reload(password=...) does not apply to a from_env() client: the
+password is read from HTTPX_PKI_PASSWORD along with the rest of the
+configuration. Set that variable instead of passing one here.
+```
+
 See [](expiry-and-rotation.md).
 
 ## When something is missing

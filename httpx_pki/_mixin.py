@@ -72,6 +72,40 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+# Source kinds whose material is not decrypted with a caller-supplied
+# password: ``env`` reads its own password variable along with the rest of the
+# configuration, and the platform stores export under an internally generated
+# single-use password. Passing one to reload() for these is always a mistake,
+# so it is refused rather than silently discarded.
+_PASSWORDLESS_SOURCES = ("env", "winstore", "macos_keychain")
+
+
+def _no_password_message(source: SourceRef) -> str:
+    """Why ``reload(password=...)`` cannot apply to *source*.
+
+    The two cases fail for different reasons and have different fixes, so the
+    message says which one the caller is in rather than only that the password
+    was not used.
+    """
+    if source.kind == "env":
+        prefix = source.args.get("prefix", "HTTPX_PKI_")
+        return (
+            "reload(password=...) does not apply to a from_env() client: the "
+            f"password is read from {prefix}PASSWORD along with the rest of "
+            "the configuration. Set that variable instead of passing one here."
+        )
+    store = (
+        "the Windows certificate store"
+        if source.kind == "winstore"
+        else "the macOS keychain"
+    )
+    return (
+        f"reload(password=...) does not apply to a client built from {store}: "
+        "the certificate is exported under an internally generated single-use "
+        "password, so there is none to supply. Drop the argument."
+    )
+
+
 def _mount_shadows_tls(pattern: object) -> bool:
     """Whether an httpx mount pattern would handle https traffic.
 
@@ -609,16 +643,23 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         The swap is atomic: if the new material cannot be loaded
         (:class:`~httpx_pki.CertificateLoadError`), the client keeps serving
-        the previous certificate. Pass *password* if the source is encrypted
-        and the client was not built with ``auto_reload`` (which is the only
-        mode that retains the password). Raises :class:`TypeError` for a
-        client built from in-memory bytes -- there is no source to re-read.
+        the previous certificate. Pass *password* if the source is a file or
+        bundle that is encrypted and the client was not built with
+        ``auto_reload`` (which is the only mode that retains the password).
+
+        Raises :class:`TypeError` for a client built from in-memory bytes
+        (there is no source to re-read), and for a *password* passed to a
+        source that has none to use: ``from_env`` reads ``{prefix}PASSWORD``
+        itself, and the Windows store and macOS keychain export under an
+        internal single-use password.
         """
         if self._source is None or not is_reloadable(self._source):
             raise TypeError(
                 "this client was built from in-memory bytes; there is no "
                 "certificate source to reload from"
             )
+        if password is not None and self._source.kind in _PASSWORDLESS_SOURCES:
+            raise TypeError(_no_password_message(self._source))
         with self._reload_lock:
             # Fingerprint the watched files BEFORE reading them: if another
             # rotation lands between the read and the fingerprint, recording

@@ -95,6 +95,27 @@ def test_reload_on_bytes_source_raises(client_p12: bytes) -> None:
             session.reload()
 
 
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("winstore", "Windows certificate store"),
+        ("macos_keychain", "macOS keychain"),
+    ],
+)
+def test_reload_rejects_a_password_for_a_platform_store(
+    client_p12: bytes, kind: str, expected: str
+) -> None:
+    # A store export uses an internal single-use password, so a caller-supplied
+    # one has nothing to decrypt. Refuse it instead of discarding it silently.
+    # The source is faked so this runs off-platform; only the reload argument
+    # check is under test, and it runs before anything touches the store.
+    with PKIClient(client_p12, password=P12_PASSWORD) as session:
+        session._source = SourceRef(kind, {"name": "ACME"})
+        with pytest.raises(TypeError, match=expected) as excinfo:
+            session.reload(password="pw")
+        assert "single-use" in str(excinfo.value)
+
+
 def test_auto_reload_on_bytes_source_rejected_at_construction(
     client_p12: bytes,
 ) -> None:

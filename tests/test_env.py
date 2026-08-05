@@ -25,6 +25,38 @@ def test_from_env_pkcs12(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         assert session.cn == "envclient"
 
 
+def test_reload_rejects_a_password_and_names_the_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # from_env reads its own password variable, so a password passed here
+    # would be silently discarded. Refuse it, and say where it belongs.
+    bundle = make_client_cert("envclient", ca=make_ca())
+    p12 = tmp_path / "client.p12"
+    p12.write_bytes(bundle.pkcs12("pw"))
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(p12))
+    monkeypatch.setenv("HTTPX_PKI_PASSWORD", "pw")
+    with PKIClient.from_env() as session:
+        with pytest.raises(TypeError, match="HTTPX_PKI_PASSWORD"):
+            session.reload(password="pw")
+        # Without one it still reloads from the environment as before.
+        session.reload()
+        assert session.cn == "envclient"
+
+
+def test_reload_rejects_a_password_under_a_custom_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The message names the prefix actually in use, not the default.
+    bundle = make_client_cert("envclient", ca=make_ca())
+    p12 = tmp_path / "client.p12"
+    p12.write_bytes(bundle.pkcs12("pw"))
+    monkeypatch.setenv("MYAPP_CERT", str(p12))
+    monkeypatch.setenv("MYAPP_PASSWORD", "pw")
+    with PKIClient.from_env("MYAPP_") as session:
+        with pytest.raises(TypeError, match="MYAPP_PASSWORD"):
+            session.reload(password="pw")
+
+
 def test_from_env_separate_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

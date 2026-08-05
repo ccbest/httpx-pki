@@ -77,6 +77,11 @@ than a certificate problem:
 ```text
 TypeError: auto_reload requires a filesystem-path certificate source to watch
 ```
+
+The same goes for `reload(password=...)` on a source that supplies its own —
+`from_env`, the Windows store, or the macOS keychain. The password would have
+nothing to decrypt, so it is refused rather than quietly discarded. See
+[](../guide/expiry-and-rotation.md#passwords-and-unattended-reloads).
 :::
 
 ## Warnings

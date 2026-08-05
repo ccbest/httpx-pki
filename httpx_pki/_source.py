@@ -43,7 +43,9 @@ class SourceRef:
     the encoded source password, retained only when ``auto_reload`` is on.
     """
 
-    kind: str  # "auto" | "pkcs12" | "pem" | "key_pair" | "env" | "winstore"
+    # "auto" | "pkcs12" | "pem" | "key_pair" | "env" | "winstore"
+    # | "macos_keychain"
+    kind: str
     args: dict[str, Any]
     password: bytes | None = None
 
@@ -65,9 +67,12 @@ def resolve_source(  # pylint: disable=too-many-return-statements
 ) -> Material:
     """Load fresh material from *ref*, exactly as the constructor did.
 
-    An explicit *password* overrides the one retained on the ref. The ``env``
-    kind re-reads the environment (including its password variable); the
-    ``winstore`` kind re-exports from the Windows store.
+    An explicit *password* overrides the one retained on the ref. It only ever
+    reaches a kind that decrypts with one: the ``env`` kind re-reads the
+    environment (including its own password variable) and the platform stores
+    re-export under an internal single-use password, so
+    :meth:`~httpx_pki.PKIClient.reload` refuses a password for those rather
+    than passing one here to be ignored.
     """
     pw = password if password is not None else ref.password
     args = ref.args

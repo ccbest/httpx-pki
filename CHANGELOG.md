@@ -48,6 +48,16 @@ the git history for the fine print.
   `TypeError` rather than silently indexing. A string is a name substring or an
   exact SHA-1/SHA-256 fingerprint, matching the bundle rule. `name=` and
   `thumbprint=` are unchanged and remain the unambiguous spellings.
+- **Bug fix: `reload(password=...)` no longer silently discards the password**
+  for sources that supply their own. A client built by `from_env()` reads
+  `{prefix}PASSWORD` itself, and the Windows store and macOS keychain export
+  under an internally generated single-use password — for all three the
+  argument had nothing to decrypt and was dropped without a word, so removing
+  a password from the environment and passing it to `reload()` instead failed
+  with a bare "wrong password" from a caller who had supplied one. It now
+  raises `TypeError` naming which case you are in and where the password
+  belongs, matching how `auto_reload` already rejects a source it cannot
+  watch. Reloads that pass no password are unaffected.
 - **truststore is now a direct required dependency** (it also arrives
   transitively with httpx2, but httpx-pki calls it directly). The `[system]`
   and `[httpx2]` extras still install but are no-ops; they are kept so

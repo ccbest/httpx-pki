@@ -130,6 +130,24 @@ client.reload()                      # works — password retained
 That is a deliberate trade: it keeps the password in memory for the client's
 lifetime. See [](../about/security.md).
 
+:::{note}
+`password=` applies only to sources httpx-pki decrypts on your behalf — a
+PKCS#12 or PEM bundle, or a separate key file. Three sources supply their own,
+and passing one to them raises rather than being quietly discarded:
+
+```text
+TypeError: reload(password=...) does not apply to a from_env() client: the
+password is read from HTTPX_PKI_PASSWORD along with the rest of the
+configuration. Set that variable instead of passing one here.
+
+TypeError: reload(password=...) does not apply to a client built from the
+Windows certificate store: the certificate is exported under an internally
+generated single-use password, so there is none to supply. Drop the argument.
+```
+
+The macOS keychain says the same as the Windows store.
+:::
+
 (strict-validity)=
 ## Strict validity
 
