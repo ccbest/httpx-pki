@@ -27,6 +27,27 @@ the git history for the fine print.
   keyword every other constructor and `reload()` already used. Rename the 
   argument at call sites: `from_key_pair(cert, key, key_password=...)` becomes
   `from_key_pair(cert, key, password=...)`.
+- **Breaking: `CertInfo.not_before` / `not_after` are now `not_valid_before` /
+  `not_valid_after`**, matching the client properties of the same name (and
+  `cryptography`'s own vocabulary) so the two objects no longer spell the same
+  instant two ways. `httpx_pki.testing.make_client_cert()` takes the renamed
+  keywords to match, keeping mint-and-read-back symmetric.
+- **Breaking: the platform stores' `predicate=` is now `identity=`**, the same
+  keyword PKCS#12 and PEM bundles already used, on
+  `from_windows_cert_store`, `from_macos_keychain`, `build_windows_ssl_context`,
+  `build_macos_ssl_context`, `select_windows_certificate`, and
+  `select_macos_certificate`. `identity` is the library's noun everywhere else
+  (`P12Identity`, `list_identities()`, `HTTPX_PKI_IDENTITY`), and having one
+  spelling for bundles and another for stores meant `currently_valid` had to be
+  documented twice in different vocabulary. It now reads
+  `identity=currently_valid` everywhere.
+
+  On the stores `identity=` accepts everything a bundle's does *except* an
+  integer position: a store has no stable enumeration order, so a position
+  would select a different certificate from one run to the next, and it raises
+  `TypeError` rather than silently indexing. A string is a name substring or an
+  exact SHA-1/SHA-256 fingerprint, matching the bundle rule. `name=` and
+  `thumbprint=` are unchanged and remain the unambiguous spellings.
 - **truststore is now a direct required dependency** (it also arrives
   transitively with httpx2, but httpx-pki calls it directly). The `[system]`
   and `[httpx2]` extras still install but are no-ops; they are kept so

@@ -84,7 +84,7 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     name: str | None = None,
     *,
     thumbprint: str | None = None,
-    predicate: Predicate | None = None,
+    identity: str | Predicate | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
     store: str = "MY",
@@ -97,7 +97,8 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     :meth:`~httpx_pki.PKIClient.from_windows_cert_store`: it selects an
     exportable certificate from the store -- by ``name`` (case-insensitive
     substring of the subject common name or friendly name), ``thumbprint``, a
-    ``predicate`` callable, or the ``key_usage`` / ``extended_key_usage`` it
+    ``identity`` (name substring, fingerprint, or predicate callable), or the
+    ``key_usage`` / ``extended_key_usage`` it
     must assert -- and returns the ``ssl.SSLContext`` presenting it, with
     server trust configured by *verify* exactly like httpx2 (``True``, the
     default, is the OS trust store; the literal ``"certifi"`` pins the certifi
@@ -110,7 +111,7 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     raised::
 
         ctx = build_windows_ssl_context(
-            predicate=lambda c: "Internal" in (c.friendly_name or "")
+            identity=lambda c: "Internal" in (c.friendly_name or "")
         )
         transport = httpx.HTTPTransport(verify=ctx)
     """
@@ -119,7 +120,7 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     pfx, password, chosen = load_windows_pkcs12(
         name=name,
         thumbprint=thumbprint,
-        predicate=predicate,
+        identity=identity,
         key_usage=key_usage,
         extended_key_usage=extended_key_usage,
         store=store,
@@ -134,7 +135,7 @@ def build_macos_ssl_context(  # pylint: disable=too-many-arguments
     name: str | None = None,
     *,
     thumbprint: str | None = None,
-    predicate: MacPredicate | None = None,
+    identity: str | MacPredicate | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
     verify: VerifyTypes = True,
@@ -145,7 +146,8 @@ def build_macos_ssl_context(  # pylint: disable=too-many-arguments
     :meth:`~httpx_pki.PKIClient.from_macos_keychain`: it selects an exportable
     identity from the default keychain search list -- by ``name``
     (case-insensitive substring of the subject common name or keychain label),
-    ``thumbprint``, a ``predicate`` callable, or the ``key_usage`` /
+    ``thumbprint``, an ``identity`` (name substring, fingerprint, or
+    predicate callable), or the ``key_usage`` /
     ``extended_key_usage`` it must assert -- and returns the
     ``ssl.SSLContext`` presenting it, with server trust configured by *verify*
     exactly like httpx2 (``True``, the default, is the OS trust store; the
@@ -162,7 +164,7 @@ def build_macos_ssl_context(  # pylint: disable=too-many-arguments
     pfx, password, chosen = load_macos_pkcs12(
         name=name,
         thumbprint=thumbprint,
-        predicate=predicate,
+        identity=identity,
         key_usage=key_usage,
         extended_key_usage=extended_key_usage,
     )

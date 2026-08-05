@@ -130,7 +130,7 @@ def test_cert_info_fields(client: Signed, client_p12: bytes) -> None:
         info = session.cert_info()
         assert info.common_name == CLIENT_CN
         assert info.distinguished_name == f"CN={CLIENT_CN}"
-        assert info.not_after > info.not_before
+        assert info.not_valid_after > info.not_valid_before
         assert "test-client.example.com" in info.subject_alt_names
         # Audit fields, against the ground-truth cryptography object.
         assert info.serial_number == client.cert.serial_number

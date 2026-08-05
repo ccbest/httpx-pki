@@ -422,7 +422,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         name: str | None = None,
         *,
         thumbprint: str | None = None,
-        predicate: MacPredicate | None = None,
+        identity: str | MacPredicate | None = None,
         key_usage: UsageSelector | None = None,
         extended_key_usage: UsageSelector | None = None,
         verify: VerifyTypes = True,
@@ -434,12 +434,13 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         macOS only. Selects the identity from the default keychain search list
         by ``name`` (case-insensitive substring of the subject common name or
-        keychain label), ``thumbprint``, a ``predicate`` callable, or the
+        keychain label), ``thumbprint``, ``identity`` (a name substring, an
+        exact fingerprint, or a predicate callable), or the
         ``key_usage`` / ``extended_key_usage`` the certificate must assert;
         every selector given must match. A keychain holding both halves of a
         dual key pair needs the usage to choose between them, and one holding a
         renewed certificate alongside the one it replaces can take
-        ``predicate=httpx_pki.currently_valid``::
+        ``identity=httpx_pki.currently_valid``::
 
             AsyncPKIClient.from_macos_keychain(
                 "corp-user", key_usage="digital_signature"
@@ -462,7 +463,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         selector: dict[str, Any] = {
             "name": name,
             "thumbprint": thumbprint,
-            "predicate": predicate,
+            "identity": identity,
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
@@ -482,7 +483,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         name: str | None = None,
         *,
         thumbprint: str | None = None,
-        predicate: Predicate | None = None,
+        identity: str | Predicate | None = None,
         key_usage: UsageSelector | None = None,
         extended_key_usage: UsageSelector | None = None,
         store: str = "MY",
@@ -496,12 +497,13 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
         Windows only. Selects the certificate by ``name`` (case-insensitive
         substring of the subject common name or friendly name), ``thumbprint``,
-        a ``predicate`` callable, or the ``key_usage`` / ``extended_key_usage``
+        ``identity`` (a name substring, an exact fingerprint, or a predicate
+        callable), or the ``key_usage`` / ``extended_key_usage``
         the certificate must assert; every selector given must match. A store
         holding both halves of a dual key pair -- what Active Directory key
         archival provisions -- needs the usage to choose between them, and one
         holding a renewed certificate alongside the one it replaces can take
-        ``predicate=httpx_pki.currently_valid``::
+        ``identity=httpx_pki.currently_valid``::
 
             PKIClient.from_windows_cert_store(
                 "corp-user", key_usage="digital_signature"
@@ -522,7 +524,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         selector: dict[str, Any] = {
             "name": name,
             "thumbprint": thumbprint,
-            "predicate": predicate,
+            "identity": identity,
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
             "store": store,
@@ -543,12 +545,12 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     @property
     def not_valid_before(self) -> datetime.datetime:
         """Start of the client certificate's validity window (UTC)."""
-        return self._certinfo.not_before
+        return self._certinfo.not_valid_before
 
     @property
     def not_valid_after(self) -> datetime.datetime:
         """End of the client certificate's validity window (UTC)."""
-        return self._certinfo.not_after
+        return self._certinfo.not_valid_after
 
     @property
     def is_expired(self) -> bool:
@@ -578,17 +580,17 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         """
         info = self._certinfo
         now = _utcnow()
-        not_before = f"{info.not_before:%Y-%m-%d %H:%M UTC}"
-        not_after = f"{info.not_after:%Y-%m-%d %H:%M UTC}"
-        if now < info.not_before:
+        not_before = f"{info.not_valid_before:%Y-%m-%d %H:%M UTC}"
+        not_after = f"{info.not_valid_after:%Y-%m-%d %H:%M UTC}"
+        if now < info.not_valid_before:
             raise CertificateNotYetValidError(
                 f"client certificate is not valid until {not_before}"
             )
-        if now > info.not_after:
+        if now > info.not_valid_after:
             raise CertificateExpiredError(
                 f"client certificate expired on {not_after}"
             )
-        if within is not None and info.not_after - now <= within:
+        if within is not None and info.not_valid_after - now <= within:
             raise CertificateExpiredError(
                 f"client certificate expires on {not_after}, within {within}"
             )
@@ -680,27 +682,28 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     ) -> None:
         info = self._certinfo
         now = _utcnow()
-        if now > info.not_after:
+        if now > info.not_valid_after:
             warnings.warn(
-                f"client certificate expired on {info.not_after:%Y-%m-%d}; "
+                f"client certificate expired on {info.not_valid_after:%Y-%m-%d}; "
                 "mTLS handshakes will fail.",
                 CertificateValidityWarning,
                 stacklevel=3,
             )
-        elif now < info.not_before:
+        elif now < info.not_valid_before:
+            starts = f"{info.not_valid_before:%Y-%m-%d}"
             warnings.warn(
-                f"client certificate is not valid until {info.not_before:%Y-%m-%d}; "
+                f"client certificate is not valid until {starts}; "
                 "mTLS handshakes will fail until then.",
                 CertificateValidityWarning,
                 stacklevel=3,
             )
         elif (
             warn_if_expires_within is not None
-            and info.not_after - now <= warn_if_expires_within
+            and info.not_valid_after - now <= warn_if_expires_within
         ):
-            days = (info.not_after - now).days
+            days = (info.not_valid_after - now).days
             warnings.warn(
-                f"client certificate expires on {info.not_after:%Y-%m-%d} "
+                f"client certificate expires on {info.not_valid_after:%Y-%m-%d} "
                 f"(in {days} day(s)).",
                 CertificateValidityWarning,
                 stacklevel=3,
@@ -814,5 +817,5 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         return (
             f"<{type(self).__name__} "
             f"cn={info.common_name!r} "
-            f"expires={info.not_after:%Y-%m-%d}>"
+            f"expires={info.not_valid_after:%Y-%m-%d}>"
         )

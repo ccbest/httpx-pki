@@ -84,8 +84,25 @@ PKIClient.from_windows_cert_store(name="ACME", key_usage="digital_signature")
 PKIClient.from_windows_cert_store(name="ACME", extended_key_usage="client_auth")
 
 # By any predicate over the WinCert
-PKIClient.from_windows_cert_store(predicate=lambda c: c.friendly_name == "prod")
+PKIClient.from_windows_cert_store(identity=lambda c: c.friendly_name == "prod")
+
+# By identity — the portable spelling: a name substring, an exact
+# fingerprint, or a predicate, exactly as a PKCS#12 bundle accepts
+PKIClient.from_windows_cert_store(identity="ACME")
 ```
+
+`identity=` is the same keyword a bundle takes, so a selector written for a
+`.p12` carries over to the store unchanged. The one form it does *not* accept
+here is an integer position — a store has no stable ordering, so a position
+would pick a different certificate from one run to the next:
+
+```text
+TypeError: identity= cannot be an integer for a platform certificate store:
+a store has no stable ordering...
+```
+
+`name=` and `thumbprint=` remain the unambiguous spellings, for when you want
+to force one interpretation rather than let a bare string be either.
 
 :::{note}
 **Every selector you pass must match.** They intersect rather than falling
@@ -114,12 +131,12 @@ For mTLS you want the signing half; the background is in
 ### Skipping the expired copy
 
 A store tends to keep the old certificate after a renewal. The ready-made
-`currently_valid` predicate filters those out:
+`currently_valid` selector filters those out:
 
 ```python
 from httpx_pki import currently_valid
 
-PKIClient.from_windows_cert_store(name="ACME", predicate=currently_valid)
+PKIClient.from_windows_cert_store(name="ACME", identity=currently_valid)
 ```
 
 Where two remain valid during a renewal overlap, it resolves to the later

@@ -95,13 +95,38 @@ PKIClient.from_macos_keychain(name="ACME", key_usage="digital_signature")
 PKIClient.from_macos_keychain(name="ACME", extended_key_usage="email_protection")
 
 # By any predicate over the MacCert
-PKIClient.from_macos_keychain(predicate=lambda c: c.label == "prod")
+PKIClient.from_macos_keychain(identity=lambda c: c.label == "prod")
+
+# By identity — the portable spelling: a name substring, an exact
+# fingerprint, or a predicate, exactly as a PKCS#12 bundle accepts
+PKIClient.from_macos_keychain(identity="ACME")
 ```
+
+`identity=` is the same keyword a bundle and the Windows store take. As there,
+an integer position is rejected — a keychain has no stable ordering — and
+`name=` / `thumbprint=` remain the unambiguous spellings.
 
 :::{note}
 **Every selector you pass must match** — they intersect rather than falling
 back, so a thumbprint from one identity combined with a name from another
 matches nothing.
+:::
+
+:::{warning}
+**A predicate does not port between the two stores unchanged.** Each record
+exposes the platform's own name for its human-readable label — `WinCert` has
+`friendly_name` (the Windows friendly name, also what PKCS#12 calls it),
+`MacCert` has `label` (the keychain's `kSecAttrLabel`):
+
+```python
+identity=lambda c: c.friendly_name == "prod"   # Windows
+identity=lambda c: c.label == "prod"           # macOS — same idea, other name
+```
+
+Everything else is shared: `subject_cn`, `thumbprint`, `info`, `key_usage`,
+and `extended_key_usage` are spelled the same on both, so a predicate over any
+of those *is* portable — as is `name=`, which matches against the label or the
+common name on either platform.
 :::
 
 For mTLS you want the signing half of a dual key pair; the background is in
@@ -110,12 +135,12 @@ For mTLS you want the signing half of a dual key pair; the background is in
 ### Skipping the expired copy
 
 A keychain tends to keep the old identity after a renewal. The ready-made
-`currently_valid` predicate filters those out:
+`currently_valid` selector filters those out:
 
 ```python
 from httpx_pki import currently_valid
 
-PKIClient.from_macos_keychain(name="ACME", predicate=currently_valid)
+PKIClient.from_macos_keychain(name="ACME", identity=currently_valid)
 ```
 
 ## Reloading

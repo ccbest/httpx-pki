@@ -44,10 +44,13 @@ def test_expired_cert_warns_on_load_and_check_raises() -> None:
 
 
 def test_not_yet_valid_cert_warns_and_check_raises() -> None:
-    not_before = _now() + datetime.timedelta(days=10)
-    not_after = _now() + datetime.timedelta(days=40)
+    not_valid_before = _now() + datetime.timedelta(days=10)
+    not_valid_after = _now() + datetime.timedelta(days=40)
     bundle = make_client_cert(
-        "c", ca=make_ca(), not_before=not_before, not_after=not_after
+        "c",
+        ca=make_ca(),
+        not_valid_before=not_valid_before,
+        not_valid_after=not_valid_after,
     )
     with pytest.warns(CertificateValidityWarning, match="not valid until"):
         session = PKIClient(bundle.pkcs12())
@@ -60,8 +63,8 @@ def test_not_yet_valid_cert_warns_and_check_raises() -> None:
 
 
 def test_warn_if_expires_within_fires() -> None:
-    not_after = _now() + datetime.timedelta(days=5)
-    bundle = make_client_cert("c", ca=make_ca(), not_after=not_after)
+    not_valid_after = _now() + datetime.timedelta(days=5)
+    bundle = make_client_cert("c", ca=make_ca(), not_valid_after=not_valid_after)
     with pytest.warns(CertificateValidityWarning, match="expires on"):
         session = PKIClient(
             bundle.pkcs12(), warn_if_expires_within=datetime.timedelta(days=10)
@@ -77,8 +80,8 @@ def test_warn_if_expires_within_on_alternate_constructors(
 ) -> None:
     # warn_if_expires_within is an explicit parameter of every alternate
     # constructor, not something that happens to fall through **kwargs.
-    not_after = _now() + datetime.timedelta(days=5)
-    bundle = make_client_cert("c", ca=make_ca(), not_after=not_after)
+    not_valid_after = _now() + datetime.timedelta(days=5)
+    bundle = make_client_cert("c", ca=make_ca(), not_valid_after=not_valid_after)
     within = datetime.timedelta(days=10)
     with pytest.warns(CertificateValidityWarning, match="expires on"):
         if constructor == "from_pkcs12":
@@ -104,8 +107,8 @@ def test_warn_if_expires_within_on_alternate_constructors(
 
 
 def test_check_validity_within_window_raises() -> None:
-    not_after = _now() + datetime.timedelta(days=5)
-    bundle = make_client_cert("c", ca=make_ca(), not_after=not_after)
+    not_valid_after = _now() + datetime.timedelta(days=5)
+    bundle = make_client_cert("c", ca=make_ca(), not_valid_after=not_valid_after)
     with PKIClient(bundle.pkcs12()) as session:
         session.check_validity()  # currently valid -> ok
         with pytest.raises(CertificateExpiredError, match="within"):

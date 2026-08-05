@@ -54,8 +54,8 @@ info = client.cert_info()
 | `issuer_common_name` | `'Acme Issuing CA'` |
 | `issuer_distinguished_name` | `'CN=Acme Issuing CA,O=Acme'` |
 | `serial_number` | `137979069391421544275421516091962167926830026919` |
-| `not_before` | `datetime(2026, 8, 1, 17, 31, 31, tzinfo=utc)` |
-| `not_after` | `datetime(2027, 8, 2, 17, 31, 31, tzinfo=utc)` |
+| `not_valid_before` | `datetime(2026, 8, 1, 17, 31, 31, tzinfo=utc)` |
+| `not_valid_after` | `datetime(2027, 8, 2, 17, 31, 31, tzinfo=utc)` |
 | `fingerprint_sha256` | `'A92ABBA4A948400B6F791A49226192FD…'` |
 | `fingerprint_sha1` | `'B8A2152EC0FC713231352786123249F35FC66B5A'` |
 | `subject_alt_names` | `['client.example.com']` |
@@ -84,7 +84,7 @@ with no client and no private key involved:
 from httpx_pki import cert_info
 
 info = cert_info(pem_bytes)
-print(info.common_name, info.not_after)
+print(info.common_name, info.not_valid_after)
 ```
 
 To inspect what a *file* holds — including a bundle with several identities,

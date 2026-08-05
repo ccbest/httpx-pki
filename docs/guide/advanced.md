@@ -53,7 +53,7 @@ for the OS stores, selecting exactly as their `from_*` constructors do:
 ```python
 from httpx_pki import build_windows_ssl_context
 
-ctx = build_windows_ssl_context(predicate=lambda c: c.friendly_name == "prod")
+ctx = build_windows_ssl_context(identity=lambda c: c.friendly_name == "prod")
 ```
 
 :::{warning}

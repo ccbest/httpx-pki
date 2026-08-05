@@ -75,8 +75,8 @@ class CertInfo:  # pylint: disable=too-many-instance-attributes
     issuer_common_name: str | None
     issuer_distinguished_name: str
     serial_number: int
-    not_before: datetime.datetime
-    not_after: datetime.datetime
+    not_valid_before: datetime.datetime
+    not_valid_after: datetime.datetime
     fingerprint_sha256: str
     fingerprint_sha1: str
     subject_alt_names: list[str]
@@ -622,8 +622,8 @@ def certificate_info(cert: x509.Certificate) -> CertInfo:
         issuer_common_name=_name_cn(cert.issuer),
         issuer_distinguished_name=cert.issuer.rfc4514_string(),
         serial_number=cert.serial_number,
-        not_before=cert.not_valid_before_utc,
-        not_after=cert.not_valid_after_utc,
+        not_valid_before=cert.not_valid_before_utc,
+        not_valid_after=cert.not_valid_after_utc,
         fingerprint_sha256=cert.fingerprint(hashes.SHA256()).hex().upper(),
         fingerprint_sha1=cert.fingerprint(hashes.SHA1()).hex().upper(),
         subject_alt_names=sans,

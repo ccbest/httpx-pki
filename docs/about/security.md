@@ -33,7 +33,7 @@ Two things are *not* carried across, both with a `PicklingWarning`:
 
 - a custom `ssl.SSLContext` passed as `verify=` — the unpickled client falls
   back to default server verification
-- an unpicklable certificate source, such as a Windows-store `predicate`
+- an unpicklable certificate source, such as a Windows-store `identity`
   lambda — the unpickled client works but cannot `reload()`
 
 The second is a quiet weakening if you pickled the client precisely to carry a

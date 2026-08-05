@@ -178,8 +178,8 @@ def make_client_cert(  # pylint: disable=too-many-arguments,too-many-locals
     ca: CertBundle | None = None,
     dns_names: list[str] | None = None,
     ip_addresses: list[str] | None = None,
-    not_before: datetime.datetime | None = None,
-    not_after: datetime.datetime | None = None,
+    not_valid_before: datetime.datetime | None = None,
+    not_valid_after: datetime.datetime | None = None,
     expired: bool = False,
     key_usage: Iterable[str] | None = None,
     extended_key_usage: Iterable[str] | None = None,
@@ -188,9 +188,9 @@ def make_client_cert(  # pylint: disable=too-many-arguments,too-many-locals
 
     Signed by *ca* if given, otherwise self-signed. *dns_names*/*ip_addresses*
     populate the Subject Alternative Name extension. The validity window
-    defaults to (yesterday, +365 days); override it with *not_before*/
-    *not_after*, or pass ``expired=True`` for a window that has already closed
-    (handy for exercising :meth:`httpx_pki.PKIClient.check_validity`).
+    defaults to (yesterday, +365 days); override it with *not_valid_before*/
+    *not_valid_after*, or pass ``expired=True`` for a window that has already
+    closed (handy for exercising :meth:`httpx_pki.PKIClient.check_validity`).
 
     The certificate carries the extensions a real client certificate would:
     a KeyUsage of digitalSignature + keyEncipherment and an ExtendedKeyUsage
@@ -205,11 +205,11 @@ def make_client_cert(  # pylint: disable=too-many-arguments,too-many-locals
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = _utcnow()
     if expired:
-        not_before = not_before or now - datetime.timedelta(days=30)
-        not_after = not_after or now - datetime.timedelta(days=1)
+        not_valid_before = not_valid_before or now - datetime.timedelta(days=30)
+        not_valid_after = not_valid_after or now - datetime.timedelta(days=1)
     else:
-        not_before = not_before or now - datetime.timedelta(days=1)
-        not_after = not_after or now + datetime.timedelta(days=365)
+        not_valid_before = not_valid_before or now - datetime.timedelta(days=1)
+        not_valid_after = not_valid_after or now + datetime.timedelta(days=365)
 
     issuer = ca.cert.subject if ca is not None else None
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
@@ -219,8 +219,8 @@ def make_client_cert(  # pylint: disable=too-many-arguments,too-many-locals
         .issuer_name(issuer if issuer is not None else subject)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(not_before)
-        .not_valid_after(not_after)
+        .not_valid_before(not_valid_before)
+        .not_valid_after(not_valid_after)
         .add_extension(
             x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False
         )

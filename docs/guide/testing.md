@@ -66,8 +66,8 @@ expired = make_client_cert("old", ca=ca, expired=True)
 future = make_client_cert(
     "new",
     ca=ca,
-    not_before=datetime.now(timezone.utc) + timedelta(days=5),
-    not_after=datetime.now(timezone.utc) + timedelta(days=50),
+    not_valid_before=datetime.now(timezone.utc) + timedelta(days=5),
+    not_valid_after=datetime.now(timezone.utc) + timedelta(days=50),
 )
 ```
 
