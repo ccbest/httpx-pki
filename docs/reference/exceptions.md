@@ -1,6 +1,9 @@
 # Exceptions and warnings
 
-Everything httpx-pki tells you about, in one place.
+Everything httpx-pki tells you about, in one place. This page is organized by
+what httpx-pki raises; if you have an error in hand and want to know what to do
+about it — including the handshake failures that come from OpenSSL rather than
+from here — start at [](../troubleshooting.md).
 
 The split is deliberate. httpx-pki **raises** when it cannot do what you asked,
 and **warns** when it can proceed but the result is probably not what you
@@ -52,7 +55,14 @@ Neither is raised directly.
 | --- | --- |
 | `invalid PKCS#12 data or wrong password` | Wrong password, or the bytes are not PKCS#12 |
 | `could not parse private key (wrong password?)` | Encrypted key with a wrong or missing `key_password` |
+| `no private key found in PEM data` | The PEM holds certificates only — see [](../troubleshooting.md#with-no-private-key) |
+| `PKCS#12 data contains no private key` | The bundle holds certificates only — see [](../troubleshooting.md#with-no-private-key) |
+| `the data is a DER certificate with no private key; …` | A bare `.crt`/`.cer` passed as the single source; use `from_key_pair` |
+| `the data is a certificate-only PKCS#7 bundle with no private key; …` | A `.p7b` passed as the single source; it belongs in `chain=` or `verify=` |
+| `no certificate found in PEM data` | The reverse — a key with no certificate |
+| `PKCS#12 data contains no certificate` | The reverse — a key with no certificate |
 | `private key does not match certificate (their public keys differ)` | The cert and key are not a pair — see [](../guide/loading-certificates.md#when-the-key-and-certificate-do-not-match) |
+| `private key does not match any certificate in the PEM data` | Same, within one bundle — it was assembled from the wrong pieces |
 | `could not load CA bundle …: [X509: NO_CERTIFICATE_OR_CRL_FOUND]` | A `verify=` bundle that is bare DER — see [](../guide/server-trust.md#the-extension-does-not-matter-here-either) |
 | `this PKCS#12 data holds 2 identities: …` | Several identities, no selector — see [](../guide/choosing-a-certificate.md) |
 | `key_usage='crl_sign' matched no identity …` | A selector that matched nothing |

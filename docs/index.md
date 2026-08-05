@@ -65,6 +65,7 @@ What happens between your bundle and the TLS handshake.
 
 install
 quickstart
+troubleshooting
 ```
 
 ```{toctree}

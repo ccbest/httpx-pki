@@ -16,8 +16,10 @@ with PKIClient("client.p12", password="secret") as client:
     print(resp.status_code)
 ```
 
-There is no `ssl.SSLContext` to build and no temporary file on disk — the
-private key is decrypted into memory and mounted on the connection.
+There is no `ssl.SSLContext` to build and no key file left behind — the private
+key is decrypted into memory and mounted on the connection, never written
+anywhere that outlives the load. See [](about/how-it-works.md#staging-the-key-never-touches-disk-on-linux)
+for what that means on each platform.
 
 ## Whatever you were handed, there is a one-liner for it
 
@@ -141,3 +143,4 @@ Custom SSL contexts and turning verification off are covered in
 - [](guide/expiry-and-rotation.md) — hot reload and expiry warnings for
   long-lived clients
 - [](guide/testing.md) — throwaway certificates for your test suite
+- [](troubleshooting.md) — when the load fails, or the handshake does

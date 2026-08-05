@@ -6,6 +6,15 @@ httpx-pki accepts. The two OS certificate stores have their own pages
 ([Windows](windows-store.md), [macOS](macos-keychain.md)), as does
 [configuration from the environment](environment.md).
 
+:::{important}
+Whatever the shape, mTLS needs **a certificate and the private key that matches
+it** — the certificate states who you are, the key proves you are entitled to
+it, and the handshake uses both. Some of the formats below carry only
+certificates: a `.crt` or `.cer` is a single certificate, and a PKCS#7 `.p7b`
+cannot hold a key at all. If yours has no key in it, see
+[](../troubleshooting.md#do-you-have-both-halves).
+:::
+
 ## The extension does not matter
 
 Certificate files come with a lot of names — `.p12`, `.pfx`, `.pem`, `.crt`,

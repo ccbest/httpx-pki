@@ -15,7 +15,7 @@ keeps them separate:
 | `"system"` | Explicit synonym of `True` |
 | `"certifi"` | Pin the certifi CA bundle |
 | a path | A CA bundle — PEM or certs-only PKCS#7 |
-| an `ssl.SSLContext` | Your own, used as-is |
+| an `ssl.SSLContext` | Your own — the client certificate is loaded **into it**, [with caveats](#passing-your-own-ssl-context) |
 | `False` | No verification, with a warning |
 
 ## The default: the OS trust store

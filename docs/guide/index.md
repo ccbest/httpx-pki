@@ -2,7 +2,8 @@
 
 Everything httpx-pki does, grouped by the question you arrived with. If you
 just want a working request, start with the [quickstart](../quickstart.md)
-instead.
+instead — and if you have an error in hand,
+[troubleshooting](../troubleshooting.md) is organized by symptom.
 
 ## Getting a certificate loaded
 
