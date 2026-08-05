@@ -77,9 +77,9 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     pw = password if password is not None else ref.password
     args = ref.args
     if ref.kind == "auto":
-        return load_material(read_source(args["cert"]), pw, **_selectors(args))
+        return load_material(read_source(args["source"]), pw, **_selectors(args))
     if ref.kind == "pkcs12":
-        return parse_pkcs12(read_source(args["cert"]), pw, **_selectors(args))
+        return parse_pkcs12(read_source(args["source"]), pw, **_selectors(args))
     if ref.kind == "pem":
         return parse_pem_bundle(
             read_source(args["source"]), pw, **_selectors(args)
@@ -116,9 +116,7 @@ def watch_paths(ref: SourceRef) -> list[Path]:
     """
     args = ref.args
     candidates: list[Any]
-    if ref.kind in ("auto", "pkcs12"):
-        candidates = [args["cert"]]
-    elif ref.kind == "pem":
+    if ref.kind in ("auto", "pkcs12", "pem"):
         candidates = [args["source"]]
     elif ref.kind == "key_pair":
         chain = args["chain"]

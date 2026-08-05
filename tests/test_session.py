@@ -274,6 +274,21 @@ def test_cert_kwarg_rejected(client: Signed) -> None:
         )
 
 
+def test_cert_kwarg_rejected_on_every_bundle_entry_point(
+    client: Signed, client_p12: bytes
+) -> None:
+    # The source parameter is named source=, not cert=, so httpx's deprecated
+    # cert= reaches the guard on every constructor rather than binding to the
+    # first positional and producing a bare arity error naming _PKIMixin.
+    blob = client.key_pem + client.cert_pem
+    with pytest.raises(TypeError, match="httpx's cert= keyword"):
+        PKIClient(blob, cert="ignored.pem")
+    with pytest.raises(TypeError, match="httpx's cert= keyword"):
+        PKIClient.from_pkcs12(client_p12, password=P12_PASSWORD, cert="ignored.pem")
+    with pytest.raises(TypeError, match="httpx's cert= keyword"):
+        PKIClient.from_pem(blob, cert="ignored.pem")
+
+
 def test_warning_hierarchy() -> None:
     # The categories are public API: importable from the package root, and all
     # PKIWarning subclasses of UserWarning so generic filters keep matching.

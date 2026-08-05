@@ -44,7 +44,7 @@ VerifyTypes = bool | str | Path | ssl.SSLContext
 
 
 def build_ssl_context(  # pylint: disable=too-many-arguments
-    cert: CertSource,
+    source: CertSource,
     password: Password = None,
     *,
     verify: VerifyTypes = True,
@@ -71,7 +71,7 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
     :meth:`~httpx_pki.PKIClient.from_pkcs12`.
     """
     material = load_material(
-        read_source(cert),
+        read_source(source),
         encode_password(password),
         identity=identity,
         key_usage=key_usage,

@@ -148,7 +148,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
 
     def __init__(  # pylint: disable=too-many-arguments
         self,
-        cert: CertSource,
+        source: CertSource,
         password: Password = None,
         *,
         verify: VerifyTypes = True,
@@ -166,12 +166,12 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
-        material = load_material(read_source(cert), encoded, **selectors)
+        material = load_material(read_source(source), encoded, **selectors)
         self._apply_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("auto", {"cert": cert, **selectors}, encoded),
+            source=SourceRef("auto", {"source": source, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -190,10 +190,10 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     ) -> None:
         if "cert" in kwargs:
             raise TypeError(
-                "pass the client certificate to the constructor's cert source, "
-                "not via httpx's cert= keyword: httpx deprecated cert= in 0.28, "
-                "and it would collide with the SSL context httpx-pki mounts on "
-                "verify=."
+                "pass the client certificate as the constructor's source= "
+                "argument, not via httpx's cert= keyword: httpx deprecated "
+                "cert= in 0.28, and it would collide with the SSL context "
+                "httpx-pki mounts on verify=."
             )
         # timedelta(0) means "check on every request", so test identity/type,
         # not truthiness (bool(timedelta(0)) is False).
@@ -308,7 +308,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     @classmethod
     def from_pkcs12(  # pylint: disable=too-many-arguments
         cls: type[_S],
-        cert: CertSource,
+        source: CertSource,
         password: Password = None,
         *,
         verify: VerifyTypes = True,
@@ -350,12 +350,12 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
-        material = parse_pkcs12(read_source(cert), encoded, **selectors)
+        material = parse_pkcs12(read_source(source), encoded, **selectors)
         return cls._from_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("pkcs12", {"cert": cert, **selectors}, encoded),
+            source=SourceRef("pkcs12", {"source": source, **selectors}, encoded),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,

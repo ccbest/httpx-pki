@@ -58,6 +58,25 @@ the git history for the fine print.
   raises `TypeError` naming which case you are in and where the password
   belongs, matching how `auto_reload` already rejects a source it cannot
   watch. Reloads that pass no password are unaffected.
+- **Breaking: the certificate-source argument is now `source=` everywhere.**
+  `PKIClient(...)` / `AsyncPKIClient(...)`, `from_pkcs12`, and
+  `build_ssl_context` called it `cert=` while `from_pem`, `list_identities`,
+  and `list_pkcs12_identities` already called it `source=`; the parameter is
+  typed `CertSource` (a path, `bytes`, or `Path`, and for a bundle it holds a
+  key and chain as well as a certificate), so `source` describes it and now
+  names it everywhere. Callers passing it positionally — every example in the
+  docs — are unaffected.
+
+  This also fixes a real defect: because the constructor's first parameter was
+  named `cert`, httpx's deprecated `cert=` keyword bound to it instead of
+  reaching the guard, so `PKIClient(bundle, cert=...)` raised a bare
+  `_PKIMixin.__init__() got multiple values for argument 'cert'` — leaking a
+  private class name and explaining nothing — where every `from_*` constructor
+  gave a pointed message. The guard now fires uniformly.
+
+  `from_key_pair(certificate=..., private_key=...)` is unchanged: there
+  `certificate` really is the certificate, distinct from the key. So is
+  `cert_info(cert_pem)`, which takes PEM bytes rather than a source.
 - **truststore is now a direct required dependency** (it also arrives
   transitively with httpx2, but httpx-pki calls it directly). The `[system]`
   and `[httpx2]` extras still install but are no-ops; they are kept so
