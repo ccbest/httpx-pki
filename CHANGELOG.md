@@ -4,7 +4,7 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
-## 0.8.0 — Unreleased
+## 0.8.0 — 2026-08-05
 
 - **httpx2 is now the required dependency**, completing the shift 0.7 started.
   `PKIClient` / `AsyncPKIClient` subclass `httpx2.Client` / `httpx2.AsyncClient`
