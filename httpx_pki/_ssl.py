@@ -16,31 +16,44 @@ import tempfile
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import certifi
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 
+from ._audit import TrustSourceCerts, audit_presented_chain, audit_trust_sources
 from ._exceptions import CertificateLoadError, TLSConfigWarning
 from ._keychain import MacPredicate
 from ._material import (
     CertSource,
     Material,
     Password,
-    _pkcs7_cadata,
+    _load_certificate,
+    _load_certificates,
     encode_password,
     load_material,
     read_source,
+    with_extra_chain,
 )
 from ._pkcs12 import IdentitySelector, material_from_store_export
 from ._select import UsageSelector
 from ._winstore import Predicate
 
-# Accepted values for ``verify``: ``True`` (the OS trust store, the default
-# since 0.8 -- matching httpx2), ``False`` (no server verification), the
-# literal string ``"system"`` (a synonym of ``True``, kept from when the OS
-# store was opt-in), the literal string ``"certifi"`` (the certifi CA bundle,
-# which was the default through 0.7), a path to a CA bundle (PEM or
-# certs-only PKCS#7), or a ready-made SSLContext.
-VerifyTypes = bool | str | Path | ssl.SSLContext
+# One source of server trust: ``True`` (the OS trust store, the default since
+# 0.8 -- matching httpx2), the literal string ``"system"`` (a synonym of
+# ``True``, kept from when the OS store was opt-in), the literal string
+# ``"certifi"`` (the certifi CA bundle, which was the default through 0.7), or
+# a path to a CA bundle (PEM, DER, or certs-only PKCS#7) or to a directory of
+# them.
+TrustSource = bool | str | Path
+
+# Accepted values for ``verify``: one :data:`TrustSource`, several of them as a
+# list (their anchors are combined), ``False`` (no server verification), or a
+# ready-made SSLContext.
+VerifyTypes = (
+    TrustSource | ssl.SSLContext | list[TrustSource] | tuple[TrustSource, ...]
+)
 
 
 def build_ssl_context(  # pylint: disable=too-many-arguments
@@ -51,6 +64,7 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
     identity: IdentitySelector | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
+    chain: CertSource | list[CertSource] | None = None,
 ) -> ssl.SSLContext:
     """Build a client-certificate ``ssl.SSLContext`` from a cert source.
 
@@ -66,16 +80,26 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
         ctx = build_ssl_context("client.p12", password="secret")
         client = httpx.Client(verify=ctx)
 
+    Several trust sources combine -- ``verify=["system", "internal-ca.pem"]``
+    verifies against the OS store *and* a private root, which naming a bundle
+    on its own would replace rather than extend. An entry may also be a
+    directory of certificates.
+
     ``identity`` / ``key_usage`` / ``extended_key_usage`` choose between the
     identities of a multi-identity PKCS#12 or PEM bundle, exactly as on
-    :meth:`~httpx_pki.PKIClient.from_pkcs12`.
+    :meth:`~httpx_pki.PKIClient.from_pkcs12`. ``chain`` presents further
+    intermediate certificates alongside the client certificate, for a source
+    that does not carry its own.
     """
-    material = load_material(
-        read_source(source),
-        encode_password(password),
-        identity=identity,
-        key_usage=key_usage,
-        extended_key_usage=extended_key_usage,
+    material = with_extra_chain(
+        load_material(
+            read_source(source),
+            encode_password(password),
+            identity=identity,
+            key_usage=key_usage,
+            extended_key_usage=extended_key_usage,
+        ),
+        chain,
     )
     return _context_from_material(material, verify)
 
@@ -178,10 +202,31 @@ def _context_from_material(
 ) -> ssl.SSLContext:
     """Create an SSL context that verifies the server per *verify* and presents
     the client certificate held in *material*."""
-    ctx = _server_trust_context(verify)
+    ctx, trust_sources = _server_trust(verify)
     _load_client_cert(ctx, material)
     _offer_post_handshake_auth(ctx)
+    _audit(material, trust_sources)
     return ctx
+
+
+def _audit(material: Material, trust_sources: list[TrustSourceCerts]) -> None:
+    """Run the advisory checks over what was just mounted.
+
+    Placed on the one path every constructor funnels through, and wrapped so
+    that nothing here can turn a working client into a failing one: the audit
+    exists to explain a handshake that would have failed anyway, and a bug in
+    it must not be the reason a load stops working. Warnings it does raise are
+    ordinary :class:`~httpx_pki.TLSConfigWarning`\\ s and can be filtered.
+    """
+    try:
+        client_cert = _load_certificate(material.cert_pem)
+        if trust_sources:
+            audit_trust_sources(trust_sources, client_cert)
+        audit_presented_chain(
+            client_cert, [_load_certificate(pem) for pem in material.ca_pems]
+        )
+    except Exception:  # pylint: disable=broad-exception-caught
+        pass
 
 
 def _offer_post_handshake_auth(ctx: ssl.SSLContext) -> None:
@@ -215,8 +260,176 @@ def _offer_post_handshake_auth(ctx: ssl.SSLContext) -> None:
         pass
 
 
-def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
-    """Create a context per the *verify* policy.
+def _is_system(source: TrustSource) -> bool:
+    """Whether *source* names the OS trust store."""
+    return source is True or (isinstance(source, str) and source == "system")
+
+
+def _normalize_trust_sources(verify: VerifyTypes) -> list[TrustSource]:
+    """The trust sources in *verify* as a list, rejecting what cannot combine.
+
+    A scalar becomes a one-element list, so a single source and a list of one
+    take exactly the same path. ``False`` and a pre-built ``SSLContext`` are
+    handled before this and are errors inside a list: neither can be merged
+    with anything -- one turns verification off and the other is already a
+    finished decision.
+    """
+    if not isinstance(verify, (list, tuple)):
+        # ``False`` and a pre-built context are handled by the caller before
+        # this point, so what is left is a single trust source.
+        return [cast(TrustSource, verify)]
+    if not verify:
+        raise TypeError(
+            "verify=[] has no trust sources. Pass at least one, or verify=False "
+            "to disable server verification deliberately (which is not the same "
+            "thing, and warns)."
+        )
+    for source in verify:
+        if source is False:
+            raise TypeError(
+                "verify=False disables server verification entirely and cannot "
+                "be combined with other trust sources; pass it on its own."
+            )
+        if isinstance(source, ssl.SSLContext):
+            raise TypeError(
+                "a pre-built ssl.SSLContext cannot be combined with other trust "
+                "sources -- it already carries its own. Pass it on its own, or "
+                "load the extra CAs into it yourself."
+            )
+        if not isinstance(source, (bool, str, Path)):
+            raise TypeError(
+                'each entry in a verify= list must be True, "system", '
+                '"certifi", or a path to a CA bundle or directory, got '
+                f"{type(source).__name__}"
+            )
+    return list(verify)
+
+
+def _trust_cadata(source: TrustSource) -> tuple[str, list[x509.Certificate]]:
+    """The PEM text *source* contributes, and its certificates for the audit.
+
+    Everything is funnelled through ``cadata`` rather than ``cafile``: it is
+    the one form that takes several sources, a directory, and the DER and
+    PKCS#7 encodings OpenSSL will not read from a file, and it is what the
+    platform verifiers see. truststore hands macOS and Windows the extra
+    anchors via ``SSLContext.get_ca_certs()``, which reports what came from
+    ``cafile``/``cadata`` but **not** from ``capath`` -- OpenSSL resolves a
+    ``capath`` lazily by hashed filename and never enumerates it. A directory
+    passed as ``capath`` would therefore contribute nothing on macOS and
+    Windows while working on Linux, so directories are read here instead.
+    Reading them also makes the common shape work at all: a directory mounted
+    from a Kubernetes ConfigMap holds ``internal-ca.crt``, not the
+    ``c_rehash``-style hashed names ``capath`` requires.
+
+    The parsed certificates are returned for :mod:`httpx_pki._audit` only.
+    Parsing is best-effort and never gates the load: PEM text is passed through
+    as it was read, so a bundle OpenSSL accepts and ``cryptography`` does not
+    keeps working and is merely not audited.
+    """
+    if isinstance(source, str) and source == "certifi":
+        # The literal "certifi" pins the certifi CA bundle by name -- the
+        # default trust through 0.7, for callers who want the bundled public
+        # CAs regardless of what the OS store holds. Like "system", a
+        # CA-bundle file named "certifi" can still be selected as
+        # Path("certifi"). Not audited: it is curated, and parsing it is both
+        # the most expensive thing here and the least likely to find anything.
+        return Path(certifi.where()).read_text(encoding="ascii"), []
+
+    path = Path(os.fspath(source))  # type: ignore[arg-type]
+    if path.is_dir():
+        return _trust_cadata_from_directory(path)
+
+    try:
+        data = read_source(path)
+    except CertificateLoadError as exc:
+        raise CertificateLoadError(f"could not load CA bundle {source!r}") from exc
+
+    if b"-----BEGIN CERTIFICATE" in data:
+        text = data.decode("ascii", errors="replace")
+        try:
+            return text, _load_certificates(data)
+        except CertificateLoadError:
+            return text, []  # OpenSSL's problem to accept or reject, not ours
+    # DER, or a certs-only PKCS#7 (.p7b -- the usual Windows-CA chain export):
+    # neither is readable as cafile, so normalize to PEM here.
+    try:
+        certificates = _load_certificates(data)
+    except CertificateLoadError as exc:
+        raise CertificateLoadError(
+            f"could not load CA bundle {source!r}: not PEM, DER, or PKCS#7"
+        ) from exc
+    return _pem_text(certificates), certificates
+
+
+def _trust_cadata_from_directory(
+    path: Path,
+) -> tuple[str, list[x509.Certificate]]:
+    """Every certificate in *path*, one level deep.
+
+    Files that do not parse as certificates are skipped rather than fatal: a
+    CA directory routinely carries a ``README``, an OpenSSL hash symlink, or a
+    CRL alongside the certificates. A directory that yields nothing at all is
+    an error -- it is the one case that is certainly a mistake.
+    """
+    certificates: list[x509.Certificate] = []
+    seen: set[bytes] = set()
+    for entry in sorted(path.iterdir()):
+        if not entry.is_file():
+            continue
+        try:
+            found = _load_certificates(entry.read_bytes())
+        except (CertificateLoadError, OSError):
+            continue
+        for cert in found:
+            # Debian's /etc/ssl/certs holds both the hashed symlinks and the
+            # concatenated ca-certificates.crt, so the same certificate turns
+            # up several times.
+            der = cert.public_bytes(serialization.Encoding.DER)
+            if der not in seen:
+                seen.add(der)
+                certificates.append(cert)
+    if not certificates:
+        raise CertificateLoadError(
+            f"CA directory {str(path)!r} contains no certificates"
+        )
+    return _pem_text(certificates), certificates
+
+
+def _pem_text(certificates: list[x509.Certificate]) -> str:
+    return b"".join(
+        cert.public_bytes(serialization.Encoding.PEM) for cert in certificates
+    ).decode("ascii")
+
+
+def _truststore_context() -> ssl.SSLContext:
+    """A context backed by the OS trust store.
+
+    Windows CryptoAPI, the macOS Security framework, OpenSSL's system CA paths
+    on Linux -- where group-policy/MDM-distributed private CAs live, which
+    certifi never carries.
+    """
+    try:
+        import truststore
+    except ImportError as exc:
+        raise ImportError(
+            "the truststore package is required for verify=True and "
+            'verify="system" (it is a dependency of httpx-pki since 0.8 '
+            "-- a missing truststore means a broken install; reinstall "
+            "httpx-pki)"
+        ) from exc
+    ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # create_default_context applies SSLKEYLOGFILE itself; truststore's
+    # constructor does not, so apply it here to keep key logging uniform.
+    keylog = os.environ.get("SSLKEYLOGFILE")
+    if keylog:
+        ctx.keylog_filename = keylog
+    return ctx
+
+
+def _server_trust(
+    verify: VerifyTypes,
+) -> tuple[ssl.SSLContext, list[TrustSourceCerts]]:
+    """Create a context per the *verify* policy, plus what to audit.
 
     Every context built here honors the ``SSLKEYLOGFILE`` environment variable
     (TLS session keys are logged to that file, for Wireshark-style handshake
@@ -224,6 +437,15 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
     for the truststore-backed OS-store mode (``True`` / ``"system"``). A
     caller-supplied context is returned as-is -- key logging on it is the
     caller's decision.
+
+    Several sources combine into one set of anchors. With ``system`` among
+    them the base is a truststore context and the rest are loaded on top;
+    truststore hands them to the platform verifier alongside the system
+    anchors, so a private root verifies without displacing the public ones.
+    (On Windows that is two sequential attempts rather than one union -- the
+    system chain engine first, then one restricted to the extra anchors -- so
+    a path that mixes anchors from both sets can fail there while succeeding
+    on Linux and macOS. Nothing in reach of this library can change that.)
     """
     if isinstance(verify, ssl.SSLContext):
         warnings.warn(
@@ -232,40 +454,9 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
             "other clients -- use verify=True or a CA-bundle path (letting "
             "httpx-pki build a dedicated context) if it must stay cert-free.",
             TLSConfigWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
-        return verify
-    if verify is True or verify == "system":
-        # The OS trust store (Windows CryptoAPI, macOS Security framework,
-        # OpenSSL's system CA paths on Linux) -- where group-policy/MDM-
-        # distributed private CAs live, which certifi never carries. The
-        # default since 0.8, matching httpx2's truststore-backed default;
-        # "system" is the pre-0.8 opt-in spelling, kept as a synonym. A
-        # CA-bundle file that happens to be named "system" can still be
-        # selected as Path("system").
-        try:
-            import truststore
-        except ImportError as exc:
-            raise ImportError(
-                "the truststore package is required for verify=True and "
-                'verify="system" (it is a dependency of httpx-pki since 0.8 '
-                "-- a missing truststore means a broken install; reinstall "
-                "httpx-pki)"
-            ) from exc
-        system_ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        # create_default_context applies SSLKEYLOGFILE itself; truststore's
-        # constructor does not, so apply it here to keep key logging uniform.
-        keylog = os.environ.get("SSLKEYLOGFILE")
-        if keylog:
-            system_ctx.keylog_filename = keylog
-        return system_ctx
-    if verify == "certifi":
-        # The literal "certifi" pins the certifi CA bundle by name -- the
-        # default trust through 0.7, for callers who want the bundled public
-        # CAs regardless of what the OS store holds. Like "system", a
-        # CA-bundle file named "certifi" can still be selected as
-        # Path("certifi").
-        return ssl.create_default_context(cafile=certifi.where())
+        return verify, []
     if verify is False:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -274,32 +465,31 @@ def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:
             "verify=False disables server certificate verification; "
             "connections are vulnerable to man-in-the-middle attacks.",
             TLSConfigWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
-        return ctx
-    if isinstance(verify, (str, Path)):
-        try:
-            return ssl.create_default_context(cafile=os.fspath(verify))
-        except ssl.SSLError as exc:
-            # OpenSSL's cafile is PEM-only, so a PKCS#7 bundle (.p7b -- the
-            # usual Windows-CA chain export) lands here: convert it and load
-            # via cadata (which also keeps create_default_context from mixing
-            # in the default CAs). Must precede the OSError arm -- SSLError is
-            # an OSError subclass.
-            cadata = _pkcs7_cadata(read_source(verify))
-            if cadata is None:
-                raise CertificateLoadError(
-                    f"could not load CA bundle {verify!r}: {exc}"
-                ) from exc
-            return ssl.create_default_context(cadata=cadata)
-        except OSError as exc:
-            raise CertificateLoadError(
-                f"could not load CA bundle {verify!r}: {exc}"
-            ) from exc
-    raise TypeError(
-        'verify must be a bool, "system", "certifi", a path, or an '
-        f"ssl.SSLContext, got {type(verify).__name__}"
-    )
+        return ctx, []
+
+    sources = _normalize_trust_sources(verify)
+    extras = [source for source in sources if not _is_system(source)]
+    resolved = [(source, _trust_cadata(source)) for source in extras]
+    cadata = "".join(text for _source, (text, _certs) in resolved)
+    audited = [
+        TrustSourceCerts(label=_label(source), certificates=certs)
+        for source, (_text, certs) in resolved
+    ]
+
+    if any(_is_system(source) for source in sources):
+        ctx = _truststore_context()
+        if cadata:
+            ctx.load_verify_locations(cadata=cadata)
+        return ctx, audited
+    # Passing cadata is also what keeps create_default_context from mixing in
+    # the OS default CAs, which is the whole point of naming a bundle.
+    return ssl.create_default_context(cadata=cadata), audited
+
+
+def _label(source: TrustSource) -> str:
+    return source if isinstance(source, str) else str(source)
 
 
 @contextlib.contextmanager

@@ -44,6 +44,7 @@ from ._material import (
     parse_pem_bundle,
     parse_pkcs12,
     read_source,
+    with_extra_chain,
 )
 from ._pkcs12 import IdentitySelector, material_from_store_export
 from ._select import UsageSelector
@@ -164,6 +165,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         identity: IdentitySelector | None = None,
         key_usage: UsageSelector | None = None,
         extended_key_usage: UsageSelector | None = None,
+        chain: CertSource | list[CertSource] | None = None,
         warn_if_expires_within: datetime.timedelta | None = None,
         auto_reload: bool | datetime.timedelta = False,
         strict_validity: bool = False,
@@ -175,12 +177,16 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
-        material = load_material(read_source(source), encoded, **selectors)
+        material = with_extra_chain(
+            load_material(read_source(source), encoded, **selectors), chain
+        )
         self._apply_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("auto", {"source": source, **selectors}, encoded),
+            source=SourceRef(
+                "auto", {"source": source, **selectors, "chain": chain}, encoded
+            ),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -369,6 +375,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         identity: IdentitySelector | None = None,
         key_usage: UsageSelector | None = None,
         extended_key_usage: UsageSelector | None = None,
+        chain: CertSource | list[CertSource] | None = None,
         warn_if_expires_within: datetime.timedelta | None = None,
         auto_reload: bool | datetime.timedelta = False,
         strict_validity: bool = False,
@@ -404,12 +411,16 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
-        material = parse_pkcs12(read_source(source), encoded, **selectors)
+        material = with_extra_chain(
+            parse_pkcs12(read_source(source), encoded, **selectors), chain
+        )
         return cls._from_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("pkcs12", {"source": source, **selectors}, encoded),
+            source=SourceRef(
+                "pkcs12", {"source": source, **selectors, "chain": chain}, encoded
+            ),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -425,6 +436,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         identity: IdentitySelector | None = None,
         key_usage: UsageSelector | None = None,
         extended_key_usage: UsageSelector | None = None,
+        chain: CertSource | list[CertSource] | None = None,
         warn_if_expires_within: datetime.timedelta | None = None,
         auto_reload: bool | datetime.timedelta = False,
         strict_validity: bool = False,
@@ -448,12 +460,16 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
             "key_usage": key_usage,
             "extended_key_usage": extended_key_usage,
         }
-        material = parse_pem_bundle(read_source(source), encoded, **selectors)
+        material = with_extra_chain(
+            parse_pem_bundle(read_source(source), encoded, **selectors), chain
+        )
         return cls._from_material(
             material,
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("pem", {"source": source, **selectors}, encoded),
+            source=SourceRef(
+                "pem", {"source": source, **selectors, "chain": chain}, encoded
+            ),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,

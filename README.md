@@ -124,6 +124,15 @@ PKIClient("client.p12", password="secret", verify="/etc/ssl/internal-ca.pem")
 PKIClient("client.p12", password="secret", verify="certifi")
 ```
 
+Naming a bundle *replaces* the default trust. To keep it and add your own —
+the usual shape for a service that talks to internal and public endpoints
+both — pass a list:
+
+```python
+PKIClient("client.p12", password="secret",
+          verify=["system", "/etc/pki/internal-root.pem"])
+```
+
 → [Server trust](https://httpx-pki.readthedocs.io/en/stable/guide/server-trust.html)
 
 ## Expiry and rotation

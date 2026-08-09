@@ -6,6 +6,53 @@ the git history for the fine print.
 
 ## Unreleased
 
+- **New: `verify=` takes a list, combining trust sources.** Naming a CA bundle
+  replaces the default trust rather than adding to it, so a client that talks
+  to both an internal mTLS service and anything public had to build its own
+  context or concatenate bundles at build time.
+  `verify=["system", "/etc/pki/internal-root.pem"]` verifies against the OS
+  trust store *and* a private root; any mix works, and a one-element list means
+  exactly what the bare value means. `False` and a ready-made `ssl.SSLContext`
+  cannot appear in a list — neither can be merged with anything — and raise
+  `TypeError`, as does an empty list. On Windows the combination is two
+  sequential attempts rather than one union (truststore's design), so a path
+  that mixes anchors from both sets can fail there while succeeding elsewhere.
+- **New: a `verify=` entry may be a directory** of certificates. It is read by
+  httpx-pki rather than passed to OpenSSL as a `capath`, which is what makes it
+  work at all for the common case: a `capath` needs `c_rehash`-style hashed
+  filenames, so a directory mounted from a Kubernetes ConfigMap would be
+  ignored, and it is resolved lazily, so it is invisible to the macOS and
+  Windows platform verifiers. Non-certificate files in the directory are
+  skipped; one with no certificates at all is an error.
+- **New: `chain=` on every constructor.** `PKIClient(...)`, `from_pkcs12`,
+  `from_pem`, and `build_ssl_context` now accept the keyword `from_key_pair`
+  already had, with the same signature (one source, a list, or raw bytes). A
+  PKCS#12 exported without its chain — what Windows produces unless "include
+  all certificates in the certification path" is ticked — was the one shape
+  that could not be completed, despite missing intermediates being the most
+  common cause of a server rejecting a client certificate. `auto_reload`
+  watches the chain files and `reload()` re-reads them.
+- **New: advisory warnings for certificates that cannot do their job.** Two
+  silent misconfigurations now report at construction instead of becoming an
+  OpenSSL error that names neither the file nor the certificate at fault. In
+  `verify=`: a certificate that is not self-signed cannot be a trust anchor, so
+  an intermediate (which would short-circuit path validation to the root that
+  should have been checked), a leaf, or the client's own certificate each warn.
+  In `chain=` and in the chain a bundle carries: a certificate that is not on
+  the path from the client certificate to its issuer is at best wasted
+  handshake bytes. All are `TLSConfigWarning` and can be filtered. Deliberately
+  quiet: a self-signed certificate in `verify=` (a root, or the self-signed
+  server certificate a development setup pins) and a cross-signed CA in
+  `chain=` (the walk follows every path, so the second copy is recognized
+  rather than reported as a stray). The audit is best-effort and cannot cause a
+  load to fail.
+- **New: `HTTPX_PKI_CA` takes several sources**, separated by `os.pathsep`
+  (`:` on POSIX, `;` on Windows) — `HTTPX_PKI_CA=system:/etc/pki/root.pem`. A
+  single value stays a single value.
+- **A bare DER certificate is now accepted as a `verify=` CA bundle.** It was
+  previously the one encoding rejected there, since OpenSSL's `cafile` is
+  PEM-only; the sources are now normalized before loading, so DER, PEM, and
+  certs-only PKCS#7 all work in `verify=` as they already did elsewhere.
 - **Fixed: servers that ask for the client certificate after the handshake are
   now answered.** Every `ssl.SSLContext` httpx-pki builds offers TLS 1.3
   post-handshake authentication ([RFC 8446 §4.6.2][rfc8446-pha]). A server that

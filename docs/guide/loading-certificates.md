@@ -58,7 +58,13 @@ PKIClient.from_pkcs12("client.p12", "secret") # explicit; password is positional
 ```
 
 Any chain certificates inside the bundle are presented to the server
-automatically.
+automatically. A bundle exported *without* them — a common shape, since
+Windows only includes the chain when "include all certificates in the
+certification path" is ticked — can be completed with `chain=`:
+
+```python
+PKIClient("client.p12", password="secret", chain="intermediate.crt")
+```
 
 ## PEM bundles
 
@@ -114,6 +120,23 @@ chain="intermediates.pem"                     # one file, may concatenate severa
 chain=["intermediate.crt", "root.crt"]        # a list of sources
 chain=b"-----BEGIN CERTIFICATE-----\n..."     # raw bytes
 ```
+
+It is accepted by **every** constructor — `PKIClient(...)`, `from_pkcs12`,
+`from_pem`, `from_key_pair` — and by `build_ssl_context`, so a source of any
+kind that arrives without its intermediates can be completed the same way.
+`auto_reload` watches the chain files alongside the certificate, and `reload()`
+re-reads them.
+
+:::{tip}
+Certificates passed as `chain=` that are not actually between your certificate
+and its issuer are reported at construction, rather than becoming a handshake
+error the server explains badly:
+
+```text
+TLSConfigWarning: 1 of the 2 certificate(s) presented alongside the client
+certificate ('Unrelated Root') are not on its chain
+```
+:::
 
 ## PKCS#7 bundles
 

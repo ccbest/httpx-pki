@@ -140,6 +140,40 @@ clients quietly sharing one identity. See
 [](../guide/server-trust.md#passing-your-own-ssl-context) and
 [](../guide/advanced.md).
 
+The rest are **advisory**: the client works, but some certificate you supplied
+cannot do the job it was given. They are grouped per source, so a bundle
+assembled wrongly produces one warning rather than one per certificate.
+
+```text
+verify='ca.pem' contains 2 intermediate CA certificate(s) ('Issuing CA', ...),
+which are not self-signed. Trusting an intermediate as an anchor accepts any
+server below it without ever checking the root that issued it.
+
+verify='ca.pem' contains 1 certificate(s) ('some-service') that are neither
+self-signed nor CAs, so they cannot anchor a chain and have no effect on
+server trust.
+
+verify='ca.pem' contains this client's own certificate. verify= configures
+which CAs you trust to identify the *server*.
+
+1 of the 2 certificate(s) presented alongside the client certificate
+('Unrelated Root') are not on its chain.
+
+none of the 1 certificate(s) presented alongside the client certificate
+('Unrelated Root') connect it to its issuer ('Corp Issuing CA').
+
+the client certificate itself is also among the chain certificates presented
+alongside it, so it goes on the wire twice.
+```
+
+A **self-signed** certificate in `verify=` never warns — that is a root CA, and
+equally the self-signed server certificate a development setup pins. A
+cross-signed CA in `chain=` never warns either: the chain is followed along
+every path, so a second copy of an intermediate under a different root is
+recognized rather than reported as a stray. See
+[](../guide/server-trust.md#combining-trust-sources) and
+[](../guide/loading-certificates.md#intermediates).
+
 `PicklingWarning` — configuration that will not survive `pickle`, which matters
 at process boundaries such as `multiprocessing` or a prefork task queue.
 Neither is fatal; the unpickled client works with less than you configured.

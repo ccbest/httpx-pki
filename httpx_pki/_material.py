@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import datetime
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -489,6 +489,38 @@ def load_chain_pems(source: CertSource) -> list[bytes]:
     ]
 
 
+def chain_sources(
+    chain: CertSource | list[CertSource] | None,
+) -> list[CertSource]:
+    """*chain* as a list: one source, several, or none."""
+    if chain is None:
+        return []
+    if isinstance(chain, list):
+        return chain
+    return [chain]
+
+
+def with_extra_chain(
+    material: Material, chain: CertSource | list[CertSource] | None
+) -> Material:
+    """*material* with the certificates in *chain* appended to what it presents.
+
+    The single place ``chain=`` is applied on top of an already-loaded source,
+    shared by the session constructors, :func:`~httpx_pki.build_ssl_context`,
+    ``from_env``, and the reload path -- so a bundle that arrives without its
+    intermediates can be completed the same way whatever loaded it.
+    ``from_key_pair`` is the exception: it assembles leaf and chain together in
+    :func:`normalize_pem`, since there the leaf must be identified first.
+    """
+    sources = chain_sources(chain)
+    if not sources:
+        return material
+    extra: list[bytes] = []
+    for source in sources:
+        extra.extend(load_chain_pems(source))
+    return replace(material, ca_pems=[*material.ca_pems, *extra])
+
+
 def normalize_pem(
     certificate: CertSource,
     private_key: CertSource,
@@ -517,13 +549,7 @@ def normalize_pem(
     else:
         leaf, intermediates = _split_leaf_and_chain(key, certs)
 
-    if chain is None:
-        chain_sources: list[CertSource] = []
-    elif isinstance(chain, list):
-        chain_sources = chain
-    else:
-        chain_sources = [chain]
-    for source in chain_sources:
+    for source in chain_sources(chain):
         intermediates.extend(_load_certificates(read_source(source)))
 
     key_pem = key.private_bytes(

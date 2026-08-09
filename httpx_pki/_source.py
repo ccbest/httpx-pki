@@ -20,11 +20,13 @@ from typing import Any
 
 from ._material import (
     Material,
+    chain_sources,
     load_material,
     normalize_pem,
     parse_pem_bundle,
     parse_pkcs12,
     read_source,
+    with_extra_chain,
 )
 from ._pkcs12 import material_from_store_export
 
@@ -76,13 +78,21 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     """
     pw = password if password is not None else ref.password
     args = ref.args
+    # .get: refs pickled before chain= reached these constructors carry no
+    # entry, and must keep reloading.
+    chain = args.get("chain")
     if ref.kind == "auto":
-        return load_material(read_source(args["source"]), pw, **_selectors(args))
+        return with_extra_chain(
+            load_material(read_source(args["source"]), pw, **_selectors(args)), chain
+        )
     if ref.kind == "pkcs12":
-        return parse_pkcs12(read_source(args["source"]), pw, **_selectors(args))
+        return with_extra_chain(
+            parse_pkcs12(read_source(args["source"]), pw, **_selectors(args)), chain
+        )
     if ref.kind == "pem":
-        return parse_pem_bundle(
-            read_source(args["source"]), pw, **_selectors(args)
+        return with_extra_chain(
+            parse_pem_bundle(read_source(args["source"]), pw, **_selectors(args)),
+            chain,
         )
     if ref.kind == "key_pair":
         return normalize_pem(
@@ -117,16 +127,13 @@ def watch_paths(ref: SourceRef) -> list[Path]:
     args = ref.args
     candidates: list[Any]
     if ref.kind in ("auto", "pkcs12", "pem"):
-        candidates = [args["source"]]
+        candidates = [args["source"], *chain_sources(args.get("chain"))]
     elif ref.kind == "key_pair":
-        chain = args["chain"]
-        if chain is None:
-            chain_list: list[Any] = []
-        elif isinstance(chain, list):
-            chain_list = list(chain)
-        else:
-            chain_list = [chain]
-        candidates = [args["certificate"], args["private_key"], *chain_list]
+        candidates = [
+            args["certificate"],
+            args["private_key"],
+            *chain_sources(args["chain"]),
+        ]
     elif ref.kind == "env":
         prefix = args["prefix"]
         candidates = [

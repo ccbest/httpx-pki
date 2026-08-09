@@ -10,11 +10,16 @@ the environment rather than code. Given a *prefix* (default ``HTTPX_PKI_``):
                               ``from_key_pair`` path with ``CERT`` as the cert
 ``{prefix}CHAIN``             path to intermediate certificates to present to
                               the server, in addition to any carried by ``CERT``
-``{prefix}CA``                path to a CA bundle used for *server* trust
-                              (``verify=``), or the literal ``system`` for
-                              the OS trust store or ``certifi`` for the
-                              certifi bundle; absent means default trust
-                              (the OS trust store since 0.8)
+``{prefix}CA``                CA bundle(s) used for *server* trust
+                              (``verify=``): a path to a bundle or a
+                              directory, or the literal ``system`` for the OS
+                              trust store or ``certifi`` for the certifi
+                              bundle. Several are separated by
+                              :data:`os.pathsep` (``:`` on POSIX, ``;`` on
+                              Windows) and their anchors combine, e.g.
+                              ``system:/etc/pki/internal-root.pem``. Absent
+                              means default trust (the OS trust store since
+                              0.8)
 ``{prefix}IDENTITY``          which identity to present when ``CERT`` is a
                               PKCS#12 or PEM bundle holding several: a file
                               position (``0``), a name substring, a
@@ -30,20 +35,19 @@ the environment rather than code. Given a *prefix* (default ``HTTPX_PKI_``):
 from __future__ import annotations
 
 import os
-from dataclasses import replace
 from typing import Any
 
 from ._exceptions import CertificateLoadError
 from ._material import (
     Material,
     encode_password,
-    load_chain_pems,
     load_material,
     normalize_pem,
     read_source,
+    with_extra_chain,
 )
 from ._select import currently_valid
-from ._ssl import VerifyTypes
+from ._ssl import TrustSource, VerifyTypes
 
 
 def _env_selectors(prefix: str) -> dict[str, Any]:
@@ -97,13 +101,34 @@ def resolve_env_material(prefix: str) -> tuple[Material, VerifyTypes]:
             )
         material = normalize_pem(cert, key, password, chain)
     else:
-        material = load_material(
-            read_source(cert), encode_password(password), **selectors
+        material = with_extra_chain(
+            load_material(read_source(cert), encode_password(password), **selectors),
+            chain,
         )
-        if chain:
-            material = replace(
-                material, ca_pems=[*material.ca_pems, *load_chain_pems(chain)]
-            )
 
-    verify: VerifyTypes = ca if ca else True
-    return material, verify
+    return material, _env_verify(ca)
+
+
+def _env_verify(ca: str | None) -> VerifyTypes:
+    """The ``verify=`` value for a ``{prefix}CA`` variable.
+
+    Several trust sources are separated by :data:`os.pathsep` -- ``:`` on
+    POSIX, ``;`` on Windows -- the separator the platform already uses for
+    lists of paths, and the one that cannot appear in a path on the platform
+    that uses it. (The comma that separates the usage variables would be
+    ambiguous here: a comma is a legal character in a filename everywhere.)
+    A single value stays a single value rather than a one-element list, so
+    what reaches ``verify=`` is exactly what the equivalent keyword would be::
+
+        HTTPX_PKI_CA=system:/etc/pki/internal-root.pem
+    """
+    if not ca:
+        return True
+    parts: list[TrustSource] = [
+        item.strip() for item in ca.split(os.pathsep) if item.strip()
+    ]
+    if not parts:
+        return True
+    if len(parts) == 1:
+        return parts[0]
+    return parts

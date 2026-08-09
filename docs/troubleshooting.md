@@ -23,7 +23,8 @@ of these carry a filename or a count as well. Match on that.
 | `…does not match…` (two wordings) | The cert and key you paired are not a pair | [](#the-key-and-certificate-do-not-match) |
 | `AmbiguousCertificateError` | Several credentials matched and httpx-pki will not guess. The message lists them | [](guide/choosing-a-certificate.md) |
 | `CertificateNotFoundError` | Your selector matched nothing. The message lists what was there to match | [](guide/choosing-a-certificate.md) |
-| `NO_CERTIFICATE_OR_CRL_FOUND` | A `verify=` bundle in bare DER, the one format not accepted there | [](guide/server-trust.md#the-extension-does-not-matter-here-either) |
+| `could not load CA bundle` | A `verify=` entry that is not PEM, DER, or PKCS#7 | [](guide/server-trust.md#the-extension-does-not-matter-here-either) |
+| `CA directory … contains no certificates` | A `verify=` directory holding nothing loadable | [](guide/server-trust.md#the-extension-does-not-matter-here-either) |
 | `HTTPX_PKI_CERT is not set` | `from_env()` with nothing to read | [](guide/environment.md) |
 | `only available on Windows` / `on macOS` | A platform constructor called off-platform | [](guide/windows-store.md) |
 | **At request time** | | |
@@ -35,6 +36,8 @@ of these carry a filename or a count as well. Match on that.
 | `SSLV3_ALERT_CERTIFICATE_EXPIRED` | Expired, and the server checked | [](#your-certificate-has-expired) |
 | **No error at all** | | |
 | The server authenticates you as the wrong principal | A shared `ssl.SSLContext`, the wrong half of a dual key pair, or a rotation you did not pick up | [](#it-connects-as-the-wrong-identity) |
+| `contains … intermediate CA certificate(s)` | A `verify=` entry that cannot anchor a chain | [](guide/server-trust.md#combining-trust-sources) |
+| `are not on its chain` | Chain certificates that do not connect your certificate to its issuer | [](#the-server-does-not-trust-you) |
 
 :::{tip}
 Not finding your message? [](reference/exceptions.md) has the full set with each

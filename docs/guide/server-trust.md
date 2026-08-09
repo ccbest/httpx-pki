@@ -14,7 +14,8 @@ keeps them separate:
 | `True` | **Default.** The operating-system trust store |
 | `"system"` | Explicit synonym of `True` |
 | `"certifi"` | Pin the certifi CA bundle |
-| a path | A CA bundle — PEM or certs-only PKCS#7 |
+| a path | A CA bundle — PEM, DER, or certs-only PKCS#7 — or a **directory** of them |
+| a **list** of any of the above | All of their anchors, [combined](#combining-trust-sources) |
 | an `ssl.SSLContext` | Your own — the client certificate is loaded **into it**, [with caveats](#passing-your-own-ssl-context) |
 | `False` | No verification, with a warning |
 
@@ -71,19 +72,23 @@ verify="/etc/pki/chain.pem"             # several PEM certs concatenated
 verify="/etc/pki/chain.p7b"             # PKCS#7, DER or PEM
 ```
 
+```python
+verify="/etc/pki/internal-ca.der"       # bare DER, since 0.9
+verify="/etc/pki/ca.d"                  # a directory of any of the above
+```
+
 :::{note}
-One genuine limit: a **bare DER certificate** is not accepted as a CA bundle,
-even though DER is fine for the client certificate. Convert it to PEM, or wrap
-it in a PKCS#7:
+A **directory** is read by httpx-pki rather than handed to OpenSSL as a
+`capath`, which matters twice over. OpenSSL's `capath` requires
+`c_rehash`-style hashed filenames, so a directory mounted from a Kubernetes
+ConfigMap — holding `internal-ca.crt`, not `a1b2c3d4.0` — would be ignored
+entirely. And a `capath` is resolved lazily, so it is invisible to the macOS
+and Windows platform verifiers, which would silently drop it while Linux kept
+working.
 
-```text
-CertificateLoadError: could not load CA bundle 'ca.der':
-[X509: NO_CERTIFICATE_OR_CRL_FOUND] no certificate or crl found
-```
-
-```console
-$ openssl x509 -inform der -in ca.der -out ca.pem
-```
+Files in the directory that are not certificates — a `README`, a CRL — are
+skipped. One level deep; subdirectories are not searched. A directory with no
+certificates at all will produce an error.
 :::
 
 :::{tip}
@@ -93,6 +98,48 @@ literals. Pass it as a `Path` to disambiguate:
 ```python
 PKIClient("client.p12", password="secret", verify=Path("system"))
 ```
+:::
+
+## Combining trust sources
+
+Naming a CA bundle **replaces** the default trust rather than adding to it —
+which is right when you want to talk to exactly one internal service, and
+wrong as soon as the same client also talks to anything public.
+
+Pass a list to get both:
+
+```python
+PKIClient(
+    "client.p12",
+    password="secret",
+    verify=["system", "/etc/pki/internal-root.pem"],
+)
+```
+
+That verifies against the OS trust store **and** your private root. Any mix
+works — several bundles, a bundle and a directory, `certifi` instead of
+`system`:
+
+```python
+verify=["system", "/etc/pki/ca.d"]                 # OS store + a directory
+verify=["certifi", "/etc/pki/internal-root.pem"]   # public CAs + ours
+verify=["/etc/pki/root-a.pem", "/etc/pki/root-b.pem"]   # two private roots
+```
+
+A single-element list means exactly what the bare value means, so
+`verify=["internal.pem"]` and `verify="internal.pem"` are the same thing — and
+a list without `system` or `certifi` in it still replaces the default trust.
+
+`False` and a ready-made `ssl.SSLContext` cannot appear in a list. Neither can
+be merged with anything: one turns verification off, and the other is already a
+finished decision. Both raise `TypeError`.
+
+:::{note}
+On **Windows** the combination is two attempts rather than one: the system
+chain engine first, then one restricted to the extra anchors. For the question
+"does this server verify?" the answer is the same, but a chain that needs to
+mix anchors from both sets can fail on Windows while succeeding on Linux and
+macOS. This is truststore's design and nothing httpx-pki can change.
 :::
 
 ## Pinning certifi
