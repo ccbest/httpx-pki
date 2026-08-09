@@ -180,7 +180,39 @@ def _context_from_material(
     the client certificate held in *material*."""
     ctx = _server_trust_context(verify)
     _load_client_cert(ctx, material)
+    _offer_post_handshake_auth(ctx)
     return ctx
+
+
+def _offer_post_handshake_auth(ctx: ssl.SSLContext) -> None:
+    """Offer TLS 1.3 post-handshake authentication (RFC 8446 section 4.6.2).
+
+    A server that wants the client certificate only on *some* routes cannot
+    know which route was asked for until it has read the request -- which is
+    after the handshake. Through TLS 1.2 it got the certificate by
+    renegotiating; TLS 1.3 removed renegotiation and replaced it, for this
+    case, with a bare ``CertificateRequest`` the server may send once the
+    handshake is done. Kestrel's ``ClientCertificateMode.DelayCertificate``,
+    mod_ssl's per-``<Location>`` ``SSLVerifyClient``, and IIS's per-path
+    negotiate-client-certificate all land here on a TLS 1.3 connection.
+
+    A server may only ask a client that advertised willingness in its
+    ClientHello, so this has to be decided before the connection carries
+    anything -- there is nothing to negotiate per-request. A server that asks
+    one which did not gets ``EXTENSION_NOT_RECEIVED`` and drops the
+    connection, which reaches the caller as an unexplained EOF on a handshake
+    that appeared to succeed. Since every context built here exists to present
+    a client certificate, and already presents it unasked during the
+    handshake, offering to present it later too costs nothing.
+
+    The attribute is compiled in only when the interpreter's OpenSSL has TLS
+    1.3, so it is set defensively: where it is missing there is no
+    post-handshake auth to offer in the first place.
+    """
+    try:
+        ctx.post_handshake_auth = True
+    except (AttributeError, NotImplementedError):  # pragma: no cover
+        pass
 
 
 def _server_trust_context(verify: VerifyTypes) -> ssl.SSLContext:

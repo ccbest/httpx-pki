@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import http.server
 import ipaddress
+import socket
 import ssl
 import threading
 from dataclasses import dataclass
@@ -211,6 +212,90 @@ def server_cert(ca: Signed) -> Signed:
         x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
     ]
     return _sign(ca, "localhost", sans)
+
+
+@dataclass
+class PHAServer:
+    """A TLS 1.3 server that asks for the client certificate *after* the
+    handshake, the way a route-scoped mTLS server does.
+
+    Not an HTTP server: the exchange under test is the TLS one, and httpx
+    contributes nothing to it beyond handing the ``ssl.SSLContext`` down to
+    the socket. Speaking the three messages directly keeps the test off
+    keep-alive timing, which is what decides whether the server gets a second
+    read to process the client's certificate on.
+
+    ``exchange()`` runs one connection to completion and reports what the
+    server saw: ``before`` and ``after`` are the peer certificate as of the
+    end of the handshake and after the post-handshake request, and ``error``
+    is set instead when the server could not ask at all.
+    """
+
+    host: str
+    ca_file: Path
+    _context: ssl.SSLContext
+
+    def exchange(self, client_context: ssl.SSLContext) -> dict[str, object]:
+        """Connect with *client_context* and return what the server observed."""
+        seen: dict[str, object] = {}
+
+        def serve(listener: socket.socket) -> None:
+            conn, _ = listener.accept()
+            try:
+                with self._context.wrap_socket(conn, server_side=True) as tls:
+                    tls.recv(4096)  # the client's opening bytes
+                    seen["before"] = tls.getpeercert()
+                    # Ask now. The request rides out with the next write, and
+                    # the client's certificate arrives on the read after that.
+                    tls.verify_client_post_handshake()
+                    tls.sendall(b"ASK")
+                    tls.recv(4096)
+                    seen["after"] = tls.getpeercert()
+            except (ssl.SSLError, OSError) as exc:
+                seen["error"] = f"{type(exc).__name__}: {exc}"
+
+        with socket.create_server((self.host, 0)) as listener:
+            port = listener.getsockname()[1]
+            thread = threading.Thread(target=serve, args=(listener,), daemon=True)
+            thread.start()
+            try:
+                with socket.create_connection((self.host, port)) as sock:
+                    with client_context.wrap_socket(
+                        sock, server_hostname="localhost"
+                    ) as tls:
+                        tls.sendall(b"HELLO")
+                        try:
+                            tls.recv(4096)
+                            tls.sendall(b"DONE")
+                        except OSError as exc:
+                            # The server hung up mid-exchange -- which is the
+                            # symptom under test, so record it and let the
+                            # assertions read `seen`.
+                            seen["client_error"] = type(exc).__name__
+            finally:
+                thread.join(timeout=10)
+        return seen
+
+
+@pytest.fixture
+def pha_server(
+    ca: Signed,
+    server_cert: Signed,
+    ca_file: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> PHAServer:
+    cert_path = tmp_path_factory.mktemp("pha") / "server.pem"
+    cert_path.write_bytes(server_cert.cert_pem + server_cert.key_pem)
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.load_cert_chain(str(cert_path))
+    ctx.load_verify_locations(str(ca_file))
+    # OPTIONAL, not REQUIRED: the whole point is that the handshake completes
+    # without a certificate and the server asks for one afterwards.
+    ctx.verify_mode = ssl.CERT_OPTIONAL
+    ctx.post_handshake_auth = True
+    return PHAServer(host="127.0.0.1", ca_file=ca_file, _context=ctx)
 
 
 @dataclass

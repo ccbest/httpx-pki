@@ -4,6 +4,27 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
+## Unreleased
+
+- **Fixed: servers that ask for the client certificate after the handshake are
+  now answered.** Every `ssl.SSLContext` httpx-pki builds offers TLS 1.3
+  post-handshake authentication ([RFC 8446 §4.6.2][rfc8446-pha]). A server that
+  requires mTLS on only some of its routes cannot ask during the handshake — it
+  does not know the route yet — so through TLS 1.2 it renegotiated, and under
+  TLS 1.3, which removed renegotiation, it sends a bare `CertificateRequest`
+  once the handshake is done. A server may only ask a client that advertised
+  willingness in its ClientHello, so this cannot be decided per-request; a
+  client that did not is refused with `EXTENSION_NOT_RECEIVED`, which surfaces
+  as a dropped connection on a handshake that appeared to succeed. Affected
+  setups include ASP.NET Core Kestrel's `ClientCertificateMode.DelayCertificate`,
+  `mod_ssl`'s per-`<Location>` `SSLVerifyClient`, and IIS's per-path negotiate
+  client certificate. Servers that require mTLS for the whole listener were
+  never affected. Offering this costs nothing: these contexts exist to present a
+  client certificate and already present it unasked during the handshake, so
+  there is no opt-out.
+
+[rfc8446-pha]: https://www.rfc-editor.org/rfc/rfc8446#section-4.6.2
+
 ## 0.8.0 — 2026-08-05
 
 - **httpx2 is now the required dependency**, completing the shift 0.7 started.

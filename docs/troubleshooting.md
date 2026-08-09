@@ -31,6 +31,7 @@ of these carry a filename or a count as well. Match on that.
 | `TLSV1_ALERT_UNKNOWN_CA` | The **server** does not trust **yours** — most often because you are not sending the intermediates | [](#the-server-does-not-trust-you) |
 | `TLSV13_ALERT_CERTIFICATE_REQUIRED` | Your certificate never reached the wire | [](#the-server-wanted-a-certificate-and-did-not-get-one) |
 | `SSLV3_ALERT_HANDSHAKE_FAILURE` | The same, on a pre-TLS 1.3 connection | [](#the-server-wanted-a-certificate-and-did-not-get-one) |
+| `EOF occurred in violation of protocol` | The handshake succeeded and the connection then died — on a route-scoped mTLS server, the sign that it asked for your certificate too late to be answered | [](#the-server-asked-after-the-handshake) |
 | `SSLV3_ALERT_CERTIFICATE_EXPIRED` | Expired, and the server checked | [](#your-certificate-has-expired) |
 | **No error at all** | | |
 | The server authenticates you as the wrong principal | A shared `ssl.SSLContext`, the wrong half of a dual key pair, or a rotation you did not pick up | [](#it-connects-as-the-wrong-identity) |
@@ -222,6 +223,55 @@ the client certificate is NOT mounted on this session.
 
 The fix is to mount the context on the inner transport — see
 [](guide/advanced.md#custom-transports).
+
+If you passed neither, and the server requires mTLS on only *some* of its
+routes, see the next section instead.
+
+### The server asked after the handshake
+
+```text
+[SSL: TLSV13_ALERT_CERTIFICATE_REQUIRED] tlsv13 alert certificate required
+SSLEOFError: EOF occurred in violation of protocol
+```
+
+**_Quick fix: upgrate to httpx-pki 0.9 or later._**
+
+Distinctive shape: the TLS handshake **succeeds**, and the connection dies
+afterwards. `cert_info()` shows exactly the certificate you expect, and the same
+client works against a server that requires mTLS on every route.
+
+This is a server that wants a client certificate for certain endpoints only — it 
+cannot know which you asked for until it has read the request,
+which is after the handshake. Through TLS 1.2 it got your certificate by
+renegotiating. TLS 1.3 removed renegotiation and replaced it, for this case,
+with *post-handshake authentication* ([RFC 8446 §4.6.2][rfc8446-pha]): the
+server sends a bare `CertificateRequest` once the handshake is done.
+
+A server may only ask a client that advertised willingness in its ClientHello —
+the very first bytes of the connection, long before the route is known. Every
+context httpx-pki builds advertises it, so **this should not happen on
+httpx-pki 0.9 or later.** If you see it:
+
+- **On httpx-pki 0.8 or earlier**, this is the cause. Upgrade.
+- **On a context you built yourself** and passed to a plain `httpx.Client`, set
+  the flag — this is the one thing `build_ssl_context()` does that a hand-rolled
+  `ssl.create_default_context()` does not:
+
+  ```python
+  ctx = ssl.create_default_context()
+  ctx.load_cert_chain("client.pem")
+  ctx.post_handshake_auth = True      # or just use build_ssl_context()
+  ```
+
+- **With a custom `transport=` or `mounts=`**, the certificate never reached the
+  wire at all — see the section above.
+
+Servers that behave this way include ASP.NET Core Kestrel with
+`ClientCertificateMode.DelayCertificate`, Apache `mod_ssl` with
+`SSLVerifyClient` inside a `<Location>`, and IIS with per-path *negotiate client
+certificate*.
+
+[rfc8446-pha]: https://www.rfc-editor.org/rfc/rfc8446#section-4.6.2
 
 ### Your certificate has expired
 
