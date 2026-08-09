@@ -52,6 +52,19 @@ Windows and macOS, where the platform verifier applies its own revocation
 policy. Beyond that, revocation is out of scope. See
 [](../guide/server-trust.md).
 
+## Fetching anything over the network
+
+httpx-pki never makes a request of its own. Reading a certificate does not
+cause one, and neither does [`explain()`](../guide/inspecting-a-certificate.md).
+
+This is a security boundary, not an omission. When a chain is incomplete,
+`explain()` reports the URL the certificate names for its issuer — its
+Authority Information Access extension — but does not retrieve it. **That URL
+comes from the certificate being inspected, which is untrusted input.**
+
+**What to do instead:** fetch it yourself, deliberately, once you have read
+where it points.
+
 ## Next steps
 
 - [](how-it-works.md) — why these boundaries fall where they do

@@ -46,7 +46,7 @@ from ._material import (
     read_source,
     with_extra_chain,
 )
-from ._select import currently_valid
+from ._select import selector_from_string, usages_from_string
 from ._ssl import TrustSource, VerifyTypes
 
 
@@ -58,24 +58,13 @@ def _env_selectors(prefix: str) -> dict[str, Any]:
     and a name (or fingerprint) otherwise; the usage variables are
     comma-separated lists.
     """
-    identity: Any = os.environ.get(f"{prefix}IDENTITY") or None
-    if identity == "currently_valid":
-        identity = currently_valid
-    elif isinstance(identity, str) and identity.lstrip("-").isdigit():
-        identity = int(identity)
     return {
-        "identity": identity,
-        "key_usage": _env_list(f"{prefix}KEY_USAGE"),
-        "extended_key_usage": _env_list(f"{prefix}EXT_KEY_USAGE"),
+        "identity": selector_from_string(os.environ.get(f"{prefix}IDENTITY")),
+        "key_usage": usages_from_string(os.environ.get(f"{prefix}KEY_USAGE")),
+        "extended_key_usage": usages_from_string(
+            os.environ.get(f"{prefix}EXT_KEY_USAGE")
+        ),
     }
-
-
-def _env_list(name: str) -> list[str] | None:
-    value = os.environ.get(name)
-    if not value:
-        return None
-    items = [item.strip() for item in value.split(",") if item.strip()]
-    return items or None
 
 
 def resolve_env_material(prefix: str) -> tuple[Material, VerifyTypes]:

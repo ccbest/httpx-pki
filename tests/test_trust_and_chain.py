@@ -270,7 +270,7 @@ def test_the_clients_own_certificate_in_verify_warns(
 ) -> None:
     own = tmp_path / "own.pem"
     own.write_bytes(client.cert_pem)
-    with pytest.warns(TLSConfigWarning, match="own\ncertificate|own certificate"):
+    with pytest.warns(TLSConfigWarning, match="own certificate"):
         build_ssl_context(
             client_p12, password=P12_PASSWORD, verify=[str(ca_file), str(own)]
         )
@@ -311,7 +311,7 @@ def test_an_unrelated_chain_certificate_warns(client_p12: bytes, ca: Signed) -> 
     # The real issuer plus a stranger: the chain is usable, but one entry has
     # no business being there.
     stranger = make_ca("Unrelated Root")
-    with pytest.warns(TLSConfigWarning, match="not on its chain"):
+    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
         build_ssl_context(
             client_p12,
             password=P12_PASSWORD,
@@ -322,7 +322,7 @@ def test_an_unrelated_chain_certificate_warns(client_p12: bytes, ca: Signed) -> 
 def test_an_entirely_wrong_chain_says_so_differently(client_p12: bytes) -> None:
     stranger = make_ca("Unrelated Root")
     other = make_ca("Also Unrelated")
-    with pytest.warns(TLSConfigWarning, match="connect it to its issuer"):
+    with pytest.warns(TLSConfigWarning, match="reach the issuer"):
         build_ssl_context(
             client_p12,
             password=P12_PASSWORD,
@@ -367,13 +367,13 @@ def test_the_audit_cannot_break_a_load(client_p12: bytes, ca: Signed) -> None:
     def boom(*args: object, **kwargs: object) -> None:
         raise RuntimeError("audit exploded")
 
-    original = ssl_module.audit_presented_chain
-    ssl_module.audit_presented_chain = boom  # type: ignore[assignment]
+    original = ssl_module.analyze_presented_chain
+    ssl_module.analyze_presented_chain = boom  # type: ignore[assignment]
     try:
         ctx = build_ssl_context(client_p12, password=P12_PASSWORD, chain=ca.cert_pem)
         assert isinstance(ctx, ssl.SSLContext)
     finally:
-        ssl_module.audit_presented_chain = original  # type: ignore[assignment]
+        ssl_module.analyze_presented_chain = original  # type: ignore[assignment]
 
 
 # -- helpers ----------------------------------------------------------------

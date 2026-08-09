@@ -91,6 +91,146 @@ To inspect what a *file* holds — including a bundle with several identities,
 and without touching the private keys — use `list_identities` instead. See
 [](choosing-a-certificate.md#look-before-you-choose).
 
+## Explaining a whole configuration
+
+`cert_info()` describes one certificate. `explain()` describes the whole
+setup — what a source holds, what it would present, what it would trust, and
+what would stop it working:
+
+```python
+import httpx_pki
+
+print(httpx_pki.explain("corp.p12", password="secret",
+                        verify=["system", "/etc/pki/internal-root.pem"]))
+```
+
+```text
+corp.p12 — PKCS#12, 1 identity, 1 chain certificate
+
+PRESENTS   svc-client
+           issued by  Corp Issuing CA
+           valid      2026-01-15 → 2027-01-15   (159 days left)
+           usage      digital_signature, key_encipherment
+           ext usage  client_auth
+           SANs       svc.internal
+           SHA-256    7923E578…
+
+CHAIN      svc-client
+             └─ Corp Issuing CA   [verified]
+               └─ Corp Root   [NOT SUPPLIED; trust anchor, need not be sent]
+
+TRUSTS     the OS trust store
+           /etc/pki/internal-root.pem — 1 anchor: Corp Root
+
+PROBLEMS   none
+```
+
+It takes the same arguments as [`build_ssl_context()`](advanced.md) and reports
+what it *would* do instead of doing it — a dry run.
+
+`repr()` is the full report too, so evaluating it in a REPL or a notebook shows
+the same thing as `print()`.
+
+### It works when loading does not
+
+This is the point. A bundle you cannot yet open is exactly the one you need to
+look inside, so a source that is merely *confusing* produces a report rather
+than an exception:
+
+- **several identities and no selector** — lists them, with the usages and
+  expiry that tell them apart, and says which selector to pass
+- **no password, or the wrong one** — says so, and says why nothing at all can
+  be shown (a PKCS#12 keeps its certificates in an encrypted section, so unlike
+  PEM there is no part of it readable first)
+
+Only a source that cannot be read at all still raises.
+
+### The diagram accounts for everything sent
+
+Three things can be true of a certificate, and all three are drawn:
+
+```text
+CHAIN      svc-client   [SENT TWICE]
+             └─ Corp Issuing CA   [verified]
+               └─ Corp Root CA   [NOT SUPPLIED]
+
+           Unrelated Root   [UNATTACHED]
+```
+
+Indented under a connector: on the path. `NOT SUPPLIED` is on the path but was
+not given — the gap the server will look for. At the left margin with no
+connector: on the wire, attached to nothing.
+
+Upper case marks a fault and lower case a neutral fact, so the severity of a
+line is readable without reading the words.
+
+### Describing is not accusing
+
+A chain that stops before its root is the **normal** shape — the root is what
+the server already has. The report shows the gap and, when the missing issuer
+is one you trust, says so. `PROBLEMS` lists only what is actually wrong.
+
+When the issuer is one you *don't* have, the report names where the certificate
+says it is published:
+
+```text
+CHAIN      svc-client
+             └─ Corp Issuing CA   [NOT SUPPLIED; published at http://pki.corp.example/CorpIssuingCA.crt]
+```
+
+httpx-pki never fetches that URL — see [](../about/non-goals.md#fetching-anything-over-the-network).
+
+### On a live client
+
+`client.explain()` is the more useful of the two when there is a session,
+because a client knows both halves — and most confusion lives in the pairing of
+"the CAs I trust to identify the server" with "the chain I present to it":
+
+```python
+with PKIClient("corp.p12", password="secret") as client:
+    print(client.explain())
+```
+
+### In a test or CI check
+
+The report is an object, not just text. Match on `Problem.code`, never on the
+message — the codes are stable, the prose is not:
+
+```python
+report = httpx_pki.explain("corp.p12", password=pw)
+assert report.ok
+assert not [p for p in report.problems if p.code.startswith("chain.")]
+```
+
+### From a shell
+
+For a file you have not written any code for yet:
+
+```console
+$ python -m httpx_pki explain corp.p12
+```
+
+It takes the same selectors the library does, so a bundle holding several
+identities can be listed and then inspected:
+
+```console
+$ python -m httpx_pki explain corp.p12                              # lists them
+$ python -m httpx_pki explain corp.p12 --key-usage digital_signature
+$ python -m httpx_pki explain corp.p12 --identity 0
+```
+
+`--chain` and `--verify` are there too, both repeatable, which makes the
+command a full dry run of `build_ssl_context()`:
+
+```console
+$ python -m httpx_pki explain corp.p12 --verify system --verify internal-ca.pem
+```
+
+It prompts for a password only if the source needs one, and exits non-zero when
+there are problems, so it works as a CI check. There is deliberately no
+`--password` flag — an argument lands in shell history and in every process
+listing; use `--password-env VAR` for scripted use.
+
 ## Asserting validity
 
 `check_validity()` raises rather than returning a boolean, so it reads well in

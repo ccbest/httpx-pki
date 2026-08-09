@@ -22,7 +22,14 @@ import certifi
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
-from ._audit import TrustSourceCerts, audit_presented_chain, audit_trust_sources
+from ._audit import (
+    Problem,
+    TrustSourceCerts,
+    analyze_certificate,
+    analyze_presented_chain,
+    analyze_trust_sources,
+    emit_warnings,
+)
 from ._exceptions import CertificateLoadError, TLSConfigWarning
 from ._keychain import MacPredicate
 from ._material import (
@@ -219,14 +226,26 @@ def _audit(material: Material, trust_sources: list[TrustSourceCerts]) -> None:
     ordinary :class:`~httpx_pki.TLSConfigWarning`\\ s and can be filtered.
     """
     try:
-        client_cert = _load_certificate(material.cert_pem)
-        if trust_sources:
-            audit_trust_sources(trust_sources, client_cert)
-        audit_presented_chain(
-            client_cert, [_load_certificate(pem) for pem in material.ca_pems]
-        )
+        emit_warnings(analyze(material, trust_sources))
     except Exception:  # pylint: disable=broad-exception-caught
         pass
+
+
+def analyze(
+    material: Material, trust_sources: list[TrustSourceCerts]
+) -> list[Problem]:
+    """Every problem with *material* and the trust sources it will be used with.
+
+    Shared by the construction-path warnings and :func:`~httpx_pki.explain`, so
+    a report can never contradict the warning that sent someone to it.
+    """
+    client_cert = _load_certificate(material.cert_pem)
+    chain = [_load_certificate(pem) for pem in material.ca_pems]
+    return [
+        *analyze_certificate(client_cert),
+        *analyze_trust_sources(trust_sources, client_cert),
+        *analyze_presented_chain(client_cert, chain),
+    ]
 
 
 def _offer_post_handshake_auth(ctx: ssl.SSLContext) -> None:
@@ -280,21 +299,20 @@ def _normalize_trust_sources(verify: VerifyTypes) -> list[TrustSource]:
         return [cast(TrustSource, verify)]
     if not verify:
         raise TypeError(
-            "verify=[] has no trust sources. Pass at least one, or verify=False "
-            "to disable server verification deliberately (which is not the same "
-            "thing, and warns)."
+            "verify=[] has no trust sources. Pass at least one, or "
+            "verify=False to disable verification."
         )
     for source in verify:
         if source is False:
             raise TypeError(
-                "verify=False disables server verification entirely and cannot "
-                "be combined with other trust sources; pass it on its own."
+                "verify=False cannot be combined with other trust sources; "
+                "pass it on its own."
             )
         if isinstance(source, ssl.SSLContext):
             raise TypeError(
-                "a pre-built ssl.SSLContext cannot be combined with other trust "
-                "sources -- it already carries its own. Pass it on its own, or "
-                "load the extra CAs into it yourself."
+                "a pre-built ssl.SSLContext cannot be combined with other "
+                "trust sources; pass it on its own, or load the extra CAs into "
+                "it yourself."
             )
         if not isinstance(source, (bool, str, Path)):
             raise TypeError(
@@ -470,26 +488,49 @@ def _server_trust(
         return ctx, []
 
     sources = _normalize_trust_sources(verify)
-    extras = [source for source in sources if not _is_system(source)]
-    resolved = [(source, _trust_cadata(source)) for source in extras]
-    cadata = "".join(text for _source, (text, _certs) in resolved)
-    audited = [
-        TrustSourceCerts(label=_label(source), certificates=certs)
-        for source, (_text, certs) in resolved
-    ]
+    described: list[TrustSourceCerts] = []
+    parts: list[str] = []
+    use_system = False
+    for source in sources:
+        if _is_system(source):
+            use_system = True
+            described.append(
+                TrustSourceCerts(label="system", kind="system")
+            )
+            continue
+        text, certs = _trust_cadata(source)
+        parts.append(text)
+        described.append(
+            TrustSourceCerts(
+                label=_label(source), kind=_kind(source), certificates=certs
+            )
+        )
+    cadata = "".join(parts)
 
-    if any(_is_system(source) for source in sources):
+    if use_system:
         ctx = _truststore_context()
         if cadata:
             ctx.load_verify_locations(cadata=cadata)
-        return ctx, audited
+        return ctx, described
     # Passing cadata is also what keeps create_default_context from mixing in
     # the OS default CAs, which is the whole point of naming a bundle.
-    return ssl.create_default_context(cadata=cadata), audited
+    return ssl.create_default_context(cadata=cadata), described
 
 
 def _label(source: TrustSource) -> str:
     return source if isinstance(source, str) else str(source)
+
+
+def _kind(source: TrustSource) -> str:
+    """How a non-system trust source will be read, for the report."""
+    if isinstance(source, str) and source == "certifi":
+        return "certifi"
+    try:
+        if Path(os.fspath(source)).is_dir():  # type: ignore[arg-type]
+            return "directory"
+    except TypeError:
+        pass
+    return "bundle"
 
 
 @contextlib.contextmanager

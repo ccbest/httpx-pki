@@ -56,6 +56,33 @@ Inspect what a source holds before mounting anything — see
 .. autofunction:: httpx_pki.currently_valid
 ```
 
+## Inspection
+
+`explain()` describes a whole configuration — what a source holds, what it
+would present, what it would trust, and what would stop it working. See
+[](../guide/inspecting-a-certificate.md#explaining-a-whole-configuration).
+
+```{eval-rst}
+.. autofunction:: httpx_pki.explain
+```
+
+```{eval-rst}
+.. autoclass:: httpx_pki.X509Explanation
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: httpx_pki.Problem
+```
+
+```{eval-rst}
+.. autoclass:: httpx_pki.ChainLink
+```
+
+```{eval-rst}
+.. autoclass:: httpx_pki.TrustAnchor
+```
+
 ## Data types
 
 ```{eval-rst}

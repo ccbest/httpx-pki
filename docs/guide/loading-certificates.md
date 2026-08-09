@@ -133,8 +133,9 @@ and its issuer are reported at construction, rather than becoming a handshake
 error the server explains badly:
 
 ```text
-TLSConfigWarning: 1 of the 2 certificate(s) presented alongside the client
-certificate ('Unrelated Root') are not on its chain
+TLSConfigWarning: 1 of 2 presented certificates ('Unrelated Root') are not on
+this certificate's chain. They are sent for nothing, and a strict server may
+reject the chain. Remove them from chain=.
 ```
 :::
 

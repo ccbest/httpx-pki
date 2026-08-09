@@ -145,25 +145,29 @@ cannot do the job it was given. They are grouped per source, so a bundle
 assembled wrongly produces one warning rather than one per certificate.
 
 ```text
-verify='ca.pem' contains 2 intermediate CA certificate(s) ('Issuing CA', ...),
-which are not self-signed. Trusting an intermediate as an anchor accepts any
-server below it without ever checking the root that issued it.
+verify='ca.pem' contains 2 intermediate CA certificates ('Issuing CA', ...).
+An intermediate is not a trust anchor: trusting one accepts any server beneath
+it without checking the root that issued it.
 
-verify='ca.pem' contains 1 certificate(s) ('some-service') that are neither
-self-signed nor CAs, so they cannot anchor a chain and have no effect on
-server trust.
+verify='ca.pem' contains 1 certificate ('some-service') that are neither
+self-signed nor CAs. They cannot anchor a chain and have no effect on server
+trust.
 
-verify='ca.pem' contains this client's own certificate. verify= configures
-which CAs you trust to identify the *server*.
+verify='ca.pem' contains this client's own certificate. verify= sets which CAs
+identify the server, so this entry has no effect.
 
-1 of the 2 certificate(s) presented alongside the client certificate
-('Unrelated Root') are not on its chain.
+1 of 2 presented certificates ('Unrelated Root') are not on this certificate's
+chain.
 
-none of the 1 certificate(s) presented alongside the client certificate
-('Unrelated Root') connect it to its issuer ('Corp Issuing CA').
+none of the 1 presented certificate ('Unrelated Root') reach the issuer
+'Corp Issuing CA'.
 
-the client certificate itself is also among the chain certificates presented
-alongside it, so it goes on the wire twice.
+the client certificate is also in its own chain, so it is sent twice.
+
+the client certificate expired on 2026-08-08. Handshakes will be rejected.
+
+the client certificate's ExtendedKeyUsage is email_protection, which omits
+client_auth.
 ```
 
 A **self-signed** certificate in `verify=` never warns — that is a root CA, and

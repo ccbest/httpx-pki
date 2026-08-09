@@ -433,7 +433,7 @@ def test_keys_inside_the_encrypted_safe_fall_back(
     # The consequence of that fallback is visible: the identity that could not
     # be enumerated is left looking like a chain certificate, and the chain
     # audit says so rather than letting it go quietly onto the wire.
-    with pytest.warns(TLSConfigWarning, match="not on its chain"):
+    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
         session = PKIClient(blob, password=P12_PASSWORD)
     with session:
         assert (

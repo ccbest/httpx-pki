@@ -78,7 +78,7 @@ def test_from_key_pair_chain_multi_cert_blob(client: Signed, ca: Signed) -> None
     # This blob also repeats the leaf, which the chain audit reports -- see
     # tests/test_audit.py.
     blob = ca.cert_pem + client.cert_pem
-    with pytest.warns(TLSConfigWarning, match="client certificate itself"):
+    with pytest.warns(TLSConfigWarning, match="also in its own chain"):
         session = PKIClient.from_key_pair(
             certificate=client.cert_pem,
             private_key=client.key_pem,

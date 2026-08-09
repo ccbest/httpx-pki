@@ -30,6 +30,7 @@ from ._exceptions import (
     PicklingWarning,
     TLSConfigWarning,
 )
+from ._explain import X509Explanation
 from ._keychain import MacPredicate
 from ._material import (
     CertInfo,
@@ -829,6 +830,26 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     def cert_info(self) -> CertInfo:
         """Return subject, validity window, and SANs of the client certificate."""
         return self._certinfo
+
+    def explain(self) -> X509Explanation:
+        """Describe what this session presents, what it trusts, and what breaks.
+
+        The :func:`~httpx_pki.explain` counterpart for a session that already
+        exists, and the more useful of the two when there is one: a client
+        knows both halves of the configuration, and most confusion lives in the
+        pairing -- the CAs you trust to identify the *server* against the chain
+        you *present* to it. ``print()`` it for the laid-out report::
+
+            print(client.explain())
+
+        The findings come from the same analyzer as the construction-time
+        warnings, so this cannot contradict a warning you saw earlier. Nothing
+        is fetched over the network; a missing issuer is reported with the URL
+        the certificate itself names for it, to retrieve deliberately.
+        """
+        from ._explain import explain_client
+
+        return explain_client(self)
 
     @property
     def certificate(self) -> x509.Certificate:

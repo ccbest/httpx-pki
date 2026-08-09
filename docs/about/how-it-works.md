@@ -66,7 +66,9 @@ For anyone reading the source:
 | `_pkcs12` | Reading identities out of a PKCS#12 bundle |
 | `_select` | The identity selectors shared by files and both OS stores |
 | `_ssl` | Building the `ssl.SSLContext`, staging, and `verify=` |
-| `_audit` | The advisory warnings about trust anchors and chain certificates |
+| `_audit` | Finding trust anchors and chain certificates that cannot do their job |
+| `_explain` | Laying that out as a report — `explain()` and `client.explain()` |
+| `__main__` | `python -m httpx_pki explain` |
 | `_mixin` | Everything the client classes share: constructors, reload, validity |
 | `_client` | The two public classes, binding the mixin to its httpx base |
 | `_winstore` / `_keychain` | The OS certificate stores |

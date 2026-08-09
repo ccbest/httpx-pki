@@ -6,6 +6,70 @@ the git history for the fine print.
 
 ## Unreleased
 
+- **New: `explain()`, `client.explain()`, and `python -m httpx_pki explain`.**
+  The audit added in this release tells you something is wrong; this is what
+  tells you what you are holding and what to do about it. It takes the same
+  arguments as `build_ssl_context()` and reports what it *would* do instead of
+  doing it — what the source holds, what it would present, what it would trust,
+  and what would stop it working. `client.explain()` is the more useful entry
+  point when a session exists, because it knows both halves of the
+  configuration.
+
+  Findings come from the same analyzer as the construction-time warnings, so a
+  report can never contradict the warning that sent you to it — and those
+  warnings now name the call that lays it out. The report is an object, not
+  just text: match on `Problem.code` (`"chain.stray"`, `"trust.intermediate"`,
+  …), which is stable, rather than on the message, which is prose.
+
+  It works when *loading* does not, which is the point — a bundle you cannot
+  yet open is exactly the one you need to look inside. Several identities with
+  no selector, or a missing password, produce a report saying so rather than an
+  exception; only a source that cannot be read at all still raises. Where the
+  construction path matches issuers by name and key identifier, `explain()`
+  verifies signatures, so a certificate that merely *claims* the right issuer
+  is caught.
+
+  Describing is kept separate from faulting: a chain that stops before its root
+  is the normal shape, and when the missing issuer is one you trust the report
+  says so instead of flagging it. When it is not, the report names the URL the
+  certificate itself gives for its issuer (its Authority Information Access
+  extension) — **which httpx-pki never fetches.** That URL comes from the
+  certificate being inspected, which is untrusted input, so retrieving it would
+  let whoever supplied the file choose a URL your process requests, simply
+  because you looked at the file. Fetch it deliberately instead.
+
+  The CLI takes the same selectors the library does — `--identity`,
+  `--key-usage`, `--extended-key-usage` — plus `--chain` and `--verify` (both
+  repeatable), so a multi-identity bundle can be listed *and then inspected*
+  without dropping into Python. It prompts for a password only when the source
+  needs one and exits non-zero when there are problems, so it works as a CI
+  check. There is deliberately no `--password` flag: an argument lands in shell
+  history and in every process listing. Use `--password-env VAR`.
+
+  The `CHAIN` diagram accounts for every certificate that goes on the wire.
+  A stray — one that is presented but connects to nothing — is drawn at the
+  left margin with no tree connector, because attached to nothing is the point;
+  the client certificate is marked when a copy of it is in the chain too. Both
+  were previously reported under `PROBLEMS` but absent from the diagram, which
+  meant it showed a certificate that is *not* sent (the missing issuer) while
+  hiding ones that are.
+
+  `repr()` of the report is the full report, not a one-line summary. The object
+  exists to be read in a REPL or a notebook, and both display through `repr` —
+  a short one meant the feature did not work where it was aimed.
+
+- **New: an expired certificate, one that is not yet valid, and one whose
+  ExtendedKeyUsage omits `client_auth` are now reported as problems.** All
+  three are certificates that load perfectly and cannot do the job. Expiry was
+  already warned about at construction but did not appear in `explain()`, which
+  read as the two disagreeing; it is now in both, and still warned about only
+  once — the session's own validity check owns that channel, since it knows
+  about `warn_if_expires_within` and `strict_validity`. The `client_auth` check
+  is new in both places: an *absent* ExtendedKeyUsage means "good for anything"
+  and is not faulted, but one that is present and omits `client_auth` says the
+  certificate was issued for something else, which is what picking the wrong
+  half of a dual key pair looks like.
+
 - **New: `verify=` takes a list, combining trust sources.** Naming a CA bundle
   replaces the default trust rather than adding to it, so a client that talks
   to both an internal mTLS service and anything public had to build its own

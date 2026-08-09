@@ -4,6 +4,24 @@ Find your error in the table, follow the link, apply the fix. If you have no
 error at all — the request succeeds and the server still treats you as the wrong
 principal — that is the [last group](#it-connects-as-the-wrong-identity).
 
+:::{tip}
+**Start here if you were handed a certificate and do not know what is in it.**
+`explain()` lays out what a source holds, what it would present, what it would
+trust, and what would stop it working — without building a client, and without
+needing the load to succeed first:
+
+```console
+$ python -m httpx_pki explain corp.p12
+```
+
+```python
+print(httpx_pki.explain("corp.p12", password="secret"))
+print(client.explain())          # when you already have a session
+```
+
+See [](guide/inspecting-a-certificate.md#explaining-a-whole-configuration).
+:::
+
 ## Find your error
 
 Errors from httpx-pki name the problem and usually the fix. Errors from OpenSSL,
@@ -36,8 +54,8 @@ of these carry a filename or a count as well. Match on that.
 | `SSLV3_ALERT_CERTIFICATE_EXPIRED` | Expired, and the server checked | [](#your-certificate-has-expired) |
 | **No error at all** | | |
 | The server authenticates you as the wrong principal | A shared `ssl.SSLContext`, the wrong half of a dual key pair, or a rotation you did not pick up | [](#it-connects-as-the-wrong-identity) |
-| `contains … intermediate CA certificate(s)` | A `verify=` entry that cannot anchor a chain | [](guide/server-trust.md#combining-trust-sources) |
-| `are not on its chain` | Chain certificates that do not connect your certificate to its issuer | [](#the-server-does-not-trust-you) |
+| `An intermediate is not a trust anchor` | A `verify=` entry that cannot anchor a chain | [](guide/server-trust.md#combining-trust-sources) |
+| `not on this certificate's chain` | Chain certificates that do not connect your certificate to its issuer | [](#the-server-does-not-trust-you) |
 
 :::{tip}
 Not finding your message? [](reference/exceptions.md) has the full set with each

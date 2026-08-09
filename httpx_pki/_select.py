@@ -435,3 +435,29 @@ def _selector_repr(  # pylint: disable=too-many-arguments
     if extended_key_usage is not None:
         described.append(f"extended_key_usage={extended_key_usage!r}")
     return " + ".join(described) if described else "no selector"
+
+
+def selector_from_string(value: str | None) -> Any:
+    """A textual ``identity=`` selector as the object the selectors expect.
+
+    Shared by the environment variables and the command line, which both have
+    only strings to work with: a file position when it reads as an integer, the
+    :data:`~httpx_pki.currently_valid` selector for that exact literal, and a
+    name or fingerprint otherwise. One implementation so the two spellings
+    cannot drift.
+    """
+    if not value:
+        return None
+    if value == "currently_valid":
+        return currently_valid
+    if value.lstrip("-").isdigit():
+        return int(value)
+    return value
+
+
+def usages_from_string(value: str | None) -> list[str] | None:
+    """A comma-separated usage list, as the selectors expect it."""
+    if not value:
+        return None
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    return items or None
