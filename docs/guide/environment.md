@@ -31,7 +31,7 @@ default; see [](#using-a-different-prefix) to change it.
 | `HTTPX_PKI_KEY` | Path to a separate private key. Switches to the cert-and-key path (`PKIClient.from_key_pair( ... )`), with `HTTPX_PKI_CERT` as the certificate.     |
 | `HTTPX_PKI_CHAIN` | Path to intermediate certificates to present, in addition to any `CERT` already carries.                                                  |
 | `HTTPX_PKI_CA` | Server trust: a CA bundle path or directory, or the literal `system` or `certifi`. Several combine, separated by `:` (`;` on Windows). Absent means the default. |
-| `HTTPX_PKI_IDENTITY` | Which identity to use when the source holds several: a position (`0`), a name substring, a fingerprint, or the literal `currently_valid`. |
+| `HTTPX_PKI_IDENTITY` | Which identity to use when the source holds several: the literal `for_mtls` (usually what you want), a position (`0`), a name substring, a fingerprint, or `currently_valid`. |
 | `HTTPX_PKI_KEY_USAGE` | Select an identity by key usage. Comma-separated, e.g. `digital_signature`.                                                               |
 | `HTTPX_PKI_EXT_KEY_USAGE` | Select an identity by extended key usage. Comma-separated, e.g. `client_auth`.                                                            |
 
@@ -89,6 +89,7 @@ discriminators available in code are available here. Without one, httpx-pki
 refuses to guess and raises `AmbiguousCertificateError`:
 
 ```console
+$ export HTTPX_PKI_IDENTITY=for_mtls               # valid + client-auth capable
 $ export HTTPX_PKI_IDENTITY=0                      # by position
 $ export HTTPX_PKI_IDENTITY="Acme Corp"            # by name substring
 $ export HTTPX_PKI_IDENTITY=A1:B2:C3:...           # by fingerprint

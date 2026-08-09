@@ -44,7 +44,7 @@ from ._material import (
     load_material,
     normalize_pem,
     read_source,
-    with_extra_chain,
+    resolve_chain,
 )
 from ._select import selector_from_string, usages_from_string
 from ._ssl import TrustSource, VerifyTypes
@@ -90,7 +90,7 @@ def resolve_env_material(prefix: str) -> tuple[Material, VerifyTypes]:
             )
         material = normalize_pem(cert, key, password, chain)
     else:
-        material = with_extra_chain(
+        material = resolve_chain(
             load_material(read_source(cert), encode_password(password), **selectors),
             chain,
         )

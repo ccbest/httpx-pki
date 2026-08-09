@@ -180,6 +180,19 @@ CHAIN      svc-client
 
 httpx-pki never fetches that URL — see [](../about/non-goals.md#fetching-anything-over-the-network).
 
+### Acting on a finding
+
+Most remedies are things only you can do — obtain a current certificate, supply
+the right intermediates, trust the root instead of an intermediate. Two are
+subtractions over material httpx-pki already holds, so it can do them for you:
+`chain.stray` and `chain.duplicate_leaf` both clear with
+[`prune_chain=True`](loading-certificates.md#dropping-what-does-not-belong),
+which is what their remedy suggests.
+
+```console
+$ python -m httpx_pki explain corp.p12 --prune-chain
+```
+
 ### On a live client
 
 `client.explain()` is the more useful of the two when there is a session,

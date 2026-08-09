@@ -26,7 +26,7 @@ from ._material import (
     parse_pem_bundle,
     parse_pkcs12,
     read_source,
-    with_extra_chain,
+    resolve_chain,
 )
 from ._pkcs12 import material_from_store_export
 
@@ -64,6 +64,15 @@ def _selectors(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _store_args(args: dict[str, Any]) -> dict[str, Any]:
+    """A platform-store ref's args, minus the ones the loader does not take.
+
+    ``prune_chain`` is a chain option recorded alongside the selector, not
+    something the store lookup knows about.
+    """
+    return {k: v for k, v in args.items() if k != "prune_chain"}
+
+
 def resolve_source(  # pylint: disable=too-many-return-statements
     ref: SourceRef, password: bytes | None = None
 ) -> Material:
@@ -78,25 +87,34 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     """
     pw = password if password is not None else ref.password
     args = ref.args
-    # .get: refs pickled before chain= reached these constructors carry no
-    # entry, and must keep reloading.
+    # .get: refs pickled before chain=/prune_chain= reached these constructors
+    # carry no entry, and must keep reloading.
     chain = args.get("chain")
+    prune = bool(args.get("prune_chain"))
     if ref.kind == "auto":
-        return with_extra_chain(
-            load_material(read_source(args["source"]), pw, **_selectors(args)), chain
+        return resolve_chain(
+            load_material(read_source(args["source"]), pw, **_selectors(args)),
+            chain,
+            prune=prune,
         )
     if ref.kind == "pkcs12":
-        return with_extra_chain(
-            parse_pkcs12(read_source(args["source"]), pw, **_selectors(args)), chain
+        return resolve_chain(
+            parse_pkcs12(read_source(args["source"]), pw, **_selectors(args)),
+            chain,
+            prune=prune,
         )
     if ref.kind == "pem":
-        return with_extra_chain(
+        return resolve_chain(
             parse_pem_bundle(read_source(args["source"]), pw, **_selectors(args)),
             chain,
+            prune=prune,
         )
     if ref.kind == "key_pair":
-        return normalize_pem(
-            args["certificate"], args["private_key"], pw, args["chain"]
+        return resolve_chain(
+            normalize_pem(
+                args["certificate"], args["private_key"], pw, args["chain"]
+            ),
+            prune=prune,
         )
     if ref.kind == "env":
         from ._env import resolve_env_material
@@ -106,13 +124,17 @@ def resolve_source(  # pylint: disable=too-many-return-statements
     if ref.kind == "winstore":
         from ._winstore import load_windows_pkcs12
 
-        pfx, pfx_password, chosen = load_windows_pkcs12(**args)
-        return material_from_store_export(pfx, pfx_password, chosen)
+        pfx, pfx_password, chosen = load_windows_pkcs12(**_store_args(args))
+        return resolve_chain(
+            material_from_store_export(pfx, pfx_password, chosen), prune=prune
+        )
     if ref.kind == "macos_keychain":
         from ._keychain import load_macos_pkcs12
 
-        pfx, pfx_password, chosen = load_macos_pkcs12(**args)
-        return material_from_store_export(pfx, pfx_password, chosen)
+        pfx, pfx_password, chosen = load_macos_pkcs12(**_store_args(args))
+        return resolve_chain(
+            material_from_store_export(pfx, pfx_password, chosen), prune=prune
+        )
     raise ValueError(f"unknown source kind {ref.kind!r}")
 
 

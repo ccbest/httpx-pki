@@ -100,13 +100,16 @@ identity's certificate looking like a chain certificate. `httpx-pki` reads the
 structure itself, so you can inspect and select:
 
 ```python
-from httpx_pki import PKIClient, list_identities, currently_valid
+from httpx_pki import PKIClient, list_identities, for_mtls
 
 list_identities("corp.p12", password="secret")   # see what's in there
 
+# Usually all you need: the identity that is valid now and can do client auth
+PKIClient("corp.p12", password="secret", identity=for_mtls)
+
+# Or pick one yourself
 PKIClient("corp.p12", password="secret", key_usage="digital_signature")
 PKIClient("corp.p12", password="secret", identity="Signature")
-PKIClient("corp.p12", password="secret", identity=currently_valid)
 ```
 
 Loading a multi-identity bundle without a selector raises rather than guessing.

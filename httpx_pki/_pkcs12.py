@@ -596,14 +596,20 @@ def _listing(identities: list[P12Identity]) -> str:
 
     Everything that plausibly distinguishes two identities is on the line: the
     usage separates a dual key pair, and the expiry separates a renewed
-    certificate from the one it replaces (which share everything else).
+    certificate from the one it replaces (which share everything else). The
+    extended usage appears when any identity carries one, since that is what
+    :data:`~httpx_pki.for_mtls` filters on and therefore what explains a miss.
     """
     lines = []
+    show_eku = any(i.info.extended_key_usage for i in identities)
     for i in identities:
         parts = [f"  [{i.index}] {i.info.common_name or '<no CN>'}"]
         if i.friendly_name:
             parts.append(f"({i.friendly_name})")
         parts.append(f"key_usage={','.join(sorted(i.info.key_usage)) or '<none>'}")
+        if show_eku:
+            eku = ",".join(i.info.extended_key_usage) or "<none>"
+            parts.append(f"ext_key_usage={eku}")
         parts.append(f"expires={i.info.not_valid_after:%Y-%m-%d}")
         parts.append(i.info.fingerprint_sha1)
         lines.append(" ".join(parts))

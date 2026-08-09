@@ -419,3 +419,145 @@ def _cross_sign(intermediate: CertBundle, other_root: CertBundle) -> bytes:
     """
     cert = _ca_cert(intermediate.cert.subject, intermediate.key, other_root)
     return cert.public_bytes(serialization.Encoding.PEM)
+
+
+# -- prune_chain: acting on the finding, not just reporting it --------------
+
+
+def test_prune_chain_drops_a_stray(client_p12: bytes, ca: Signed) -> None:
+    stranger = make_ca("Unrelated Root")
+    chain = [ca.cert_pem, stranger.cert_pem]
+
+    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
+        noisy = PKIClient(client_p12, password=P12_PASSWORD, chain=chain)
+    noisy.close()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
+        with PKIClient(
+            client_p12, password=P12_PASSWORD, chain=chain, prune_chain=True
+        ) as session:
+            assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_prune_chain_drops_a_duplicated_leaf(
+    client_p12: bytes, ca: Signed, client: Signed
+) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
+        with PKIClient(
+            client_p12,
+            password=P12_PASSWORD,
+            chain=[ca.cert_pem, client.cert_pem],
+            prune_chain=True,
+        ) as session:
+            assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_prune_chain_leaves_a_correct_chain_alone(
+    client_p12: bytes, ca: Signed
+) -> None:
+    with PKIClient(
+        client_p12, password=P12_PASSWORD, chain=ca.cert_pem, prune_chain=True
+    ) as session:
+        assert session._material.ca_pems == [ca.cert_pem]
+
+
+def test_prune_chain_keeps_the_diagnosis_when_nothing_is_on_the_path(
+    client_p12: bytes,
+) -> None:
+    """Subtraction cannot fix an absence.
+
+    Dropping everything would leave a bare leaf -- the ordinary "root not
+    included" shape -- and silence chain.disconnected while the handshake still
+    fails for exactly that reason. The certificates stay so the diagnosis does.
+    """
+    stranger = make_ca("Unrelated Root")
+    with pytest.warns(TLSConfigWarning, match="reach the issuer"):
+        session = PKIClient(
+            client_p12,
+            password=P12_PASSWORD,
+            chain=stranger.cert_pem,
+            prune_chain=True,
+        )
+    with session:
+        assert session._material.ca_pems == [stranger.cert_pem]
+
+
+def test_prune_chain_works_on_a_source_you_cannot_edit(
+    ca_bundle: CertBundle, tmp_path: Path
+) -> None:
+    """The motivating case: junk baked into the bundle itself, where there is
+    no chain= argument to remove it from."""
+    from cryptography.hazmat.primitives.serialization import pkcs12
+
+    leaf = make_client_cert("svc", ca=ca_bundle)
+    stranger = make_ca("Unrelated Root")
+    path = tmp_path / "messy.p12"
+    path.write_bytes(
+        pkcs12.serialize_key_and_certificates(
+            b"svc",
+            leaf.key,
+            leaf.cert,
+            [ca_bundle.cert, stranger.cert],
+            serialization.NoEncryption(),
+        )
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
+        with PKIClient(path, password=b"", prune_chain=True) as session:
+            names = [cert_info(p).common_name for p in session._material.ca_pems]
+            assert names == ["httpx-pki test CA"]
+
+
+def test_prune_chain_survives_reload(ca_bundle: CertBundle, tmp_path: Path) -> None:
+    from cryptography.hazmat.primitives.serialization import pkcs12
+
+    leaf = make_client_cert("svc", ca=ca_bundle)
+    stranger = make_ca("Unrelated Root")
+    path = tmp_path / "messy.p12"
+    path.write_bytes(
+        pkcs12.serialize_key_and_certificates(
+            b"svc",
+            leaf.key,
+            leaf.cert,
+            [ca_bundle.cert, stranger.cert],
+            serialization.NoEncryption(),
+        )
+    )
+    session = PKIClient(path, password=b"", prune_chain=True)
+    assert len(session._material.ca_pems) == 1
+    session.reload(password=b"")
+    assert len(session._material.ca_pems) == 1
+    session.close()
+
+
+def test_prune_chain_survives_pickling(client_p12: bytes, ca: Signed) -> None:
+    import pickle
+
+    stranger = make_ca("Unrelated Root")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", TLSConfigWarning)
+        session = PKIClient(
+            client_p12,
+            password=P12_PASSWORD,
+            chain=[ca.cert_pem, stranger.cert_pem],
+            prune_chain=True,
+        )
+        restored = pickle.loads(pickle.dumps(session))
+    assert restored._material.ca_pems == [ca.cert_pem]
+    assert restored._source is not None
+    assert restored._source.args["prune_chain"] is True
+
+
+def test_prune_chain_on_build_ssl_context(client_p12: bytes, ca: Signed) -> None:
+    stranger = make_ca("Unrelated Root")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
+        build_ssl_context(
+            client_p12,
+            password=P12_PASSWORD,
+            chain=[ca.cert_pem, stranger.cert_pem],
+            prune_chain=True,
+        )

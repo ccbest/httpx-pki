@@ -41,7 +41,7 @@ from ._material import (
     encode_password,
     load_material,
     read_source,
-    with_extra_chain,
+    resolve_chain,
 )
 from ._pkcs12 import IdentitySelector, material_from_store_export
 from ._select import UsageSelector
@@ -72,6 +72,7 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
     chain: CertSource | list[CertSource] | None = None,
+    prune_chain: bool = False,
 ) -> ssl.SSLContext:
     """Build a client-certificate ``ssl.SSLContext`` from a cert source.
 
@@ -96,9 +97,10 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
     identities of a multi-identity PKCS#12 or PEM bundle, exactly as on
     :meth:`~httpx_pki.PKIClient.from_pkcs12`. ``chain`` presents further
     intermediate certificates alongside the client certificate, for a source
-    that does not carry its own.
+    that does not carry its own; ``prune_chain`` drops the ones that are not on
+    its path, for a source whose chain you cannot edit.
     """
-    material = with_extra_chain(
+    material = resolve_chain(
         load_material(
             read_source(source),
             encode_password(password),
@@ -107,6 +109,7 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
             extended_key_usage=extended_key_usage,
         ),
         chain,
+        prune=prune_chain,
     )
     return _context_from_material(material, verify)
 

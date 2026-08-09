@@ -154,6 +154,61 @@ class _CurrentlyValid:
         return "currently_valid"
 
 
+class _ForMTLS:
+    """The ready-made "the one I can actually do mTLS with" selector.
+
+    See :data:`for_mtls`, its only instance.
+    """
+
+    def __call__(self, candidate: _StoreCert) -> bool:
+        info = candidate.info
+        if info is None:
+            return False
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if not info.not_valid_before <= now <= info.not_valid_after:
+            return False
+        return usable_for_client_auth(
+            info.key_usage, info.extended_key_usage
+        )
+
+    # A tie between candidates that are all usable is a renewal overlap, which
+    # is exactly what currently_valid already resolves: prefer the latest
+    # window, and only between certificates that are otherwise
+    # interchangeable. The halves of a dual key pair never reach it -- the
+    # encryption half is filtered out above.
+    narrow = staticmethod(_CurrentlyValid.narrow)
+
+    def __repr__(self) -> str:
+        return "httpx_pki.for_mtls"
+
+    def __reduce__(self) -> str:
+        # Pickle by name, so an unpickled SourceRef holds this same instance.
+        return "for_mtls"
+
+
+def usable_for_client_auth(
+    key_usage: frozenset[str], extended_key_usage: Sequence[str]
+) -> bool:
+    """Whether a certificate with these usages can authenticate a TLS client.
+
+    Two extensions have a say, and an *absent* extension is permissive in
+    X.509: it means "unconstrained", not "forbidden".
+
+    ExtendedKeyUsage decides first. Present and listing ``client_auth``: yes.
+    Present and not listing it: no -- the CA said what this certificate is for,
+    and it is not this. Absent: no opinion, so fall through.
+
+    KeyUsage then has to allow the handshake signature. A TLS client proves
+    possession of its key by signing, so ``digital_signature`` is required when
+    KeyUsage is asserted at all. This is what separates the halves of a dual
+    key pair that carry no EKU: the encryption half asserts only
+    ``key_encipherment`` and cannot sign.
+    """
+    if extended_key_usage:
+        return "client_auth" in extended_key_usage
+    return not key_usage or "digital_signature" in key_usage
+
+
 currently_valid = _CurrentlyValid()
 """Selector for the certificate whose validity window contains *now*.
 
@@ -169,7 +224,31 @@ when old and new are both valid, the tie resolves to the latest validity window
 -- but only between certificates that are otherwise interchangeable (same
 subject and usages). The halves of a dual key pair stay ambiguous: freshness
 cannot tell a signing certificate from an encryption one, so combine with
-``key_usage=`` instead.
+``key_usage=`` instead -- or use :data:`for_mtls`, which applies both rules.
+"""
+
+for_mtls = _ForMTLS()
+"""Selector for the identity you can actually authenticate with, right now.
+
+**The one to reach for first.** It answers the question nearly every caller is
+really asking -- *which of these should I be presenting?* -- and covers the two
+situations that otherwise need different selectors, together::
+
+    PKIClient("corp.p12", password=pw, identity=for_mtls)
+
+A candidate qualifies when its validity window contains now **and** its usages
+permit TLS client authentication: an ExtendedKeyUsage listing ``client_auth``,
+or no ExtendedKeyUsage at all together with a KeyUsage that allows signing --
+an absent extension is unconstrained in X.509, not forbidden. That is exactly
+the signing half of a dual key pair, and exactly the current certificate of a
+renewal pair. During a renewal
+overlap, where both are usable, the later window wins -- the same tie-break
+:data:`currently_valid` applies.
+
+Usable anywhere an ``identity`` is, for PKCS#12 and PEM bundles and for the
+platform stores alike. It is a filter like any other, so when nothing qualifies
+it raises :class:`~httpx_pki.CertificateNotFoundError` listing what was there
+-- an expired certificate or an encryption-only one is not silently presented.
 """
 
 
@@ -405,10 +484,14 @@ def _listing(candidates: Sequence[_StoreCert]) -> str:
     holds side by side.
     """
     lines = []
+    show_eku = any(c.extended_key_usage for c in candidates)
     for candidate in candidates:
         parts = [f"  {candidate.subject_cn or '<no CN>'}"]
         if candidate.key_usage:
             parts.append(f"key_usage={','.join(sorted(candidate.key_usage))}")
+        if show_eku:
+            eku = ",".join(candidate.extended_key_usage) or "<none>"
+            parts.append(f"ext_key_usage={eku}")
         if candidate.info is not None:
             parts.append(f"expires={candidate.info.not_valid_after:%Y-%m-%d}")
         parts.append(candidate.thumbprint)
@@ -450,6 +533,8 @@ def selector_from_string(value: str | None) -> Any:
         return None
     if value == "currently_valid":
         return currently_valid
+    if value == "for_mtls":
+        return for_mtls
     if value.lstrip("-").isdigit():
         return int(value)
     return value

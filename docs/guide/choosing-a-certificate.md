@@ -96,6 +96,52 @@ fingerprints, and usage bits. `list_pkcs12_identities` is the stricter sibling
 for when only PKCS#12 should be accepted — it rejects PEM rather than falling
 back to it.
 
+(for-mtls)=
+## Start here: `for_mtls`
+
+Most of the time the question is not *which of these certificates do I want* —
+it is *which one can I actually connect with*. `for_mtls` answers exactly that:
+
+```python
+from httpx_pki import PKIClient, for_mtls
+
+PKIClient("corp.p12", password="secret", identity=for_mtls)
+```
+
+It selects the identity that is **valid right now** and **usable for client
+authentication**, which between them cover the two situations the rest of this
+page is about:
+
+- a **dual key pair** — the signing half qualifies, the encryption half does
+  not
+- a **renewal pair** — the expired certificate is out, and during an overlap
+  the later one wins
+
+If you reach for one selector, reach for this one. The rest of the page is for
+when you need something it cannot express — a specific certificate by name,
+fingerprint, or position, or a rule of your own.
+
+:::{note}
+`for_mtls` is a filter, so it **raises**
+{class}`~httpx_pki.CertificateNotFoundError` when nothing qualifies rather than
+falling back to something unusable. The message lists what was there, including
+each identity's extended key usage — which is usually what explains the miss.
+:::
+
+### What qualifies
+
+| ExtendedKeyUsage | KeyUsage | Usable? |
+| --- | --- | --- |
+| includes `client_auth` | anything | **yes** |
+| present, no `client_auth` | anything | no — the CA said what it is for |
+| absent | includes `digital_signature`, or absent | **yes** |
+| absent | present, no `digital_signature` | no — the key cannot sign the handshake |
+
+An absent extension means *unconstrained* in X.509, not *forbidden* — so a
+certificate carrying neither extension is accepted. When there is no
+ExtendedKeyUsage to go on, KeyUsage decides, which is what separates the halves
+of a dual key pair issued without one.
+
 ## The selectors
 
 Every bundle entry point takes the same three selectors — `PKIClient(...)`,
@@ -150,6 +196,13 @@ extended_key_usage="1.3.6.1.5.5.7.3.2"   # dotted OID
 
 (picking-the-current-one)=
 ## Picking the current one
+
+:::{tip}
+For the common case, [`for_mtls`](#for-mtls) already applies this
+rule *and* the client-authentication one. Reach for `currently_valid` when you
+want freshness alone — for example on a certificate that is deliberately not
+for client authentication.
+:::
 
 When a file carries a renewed certificate next to the one it replaces, only the
 validity window separates them. The ready-made `currently_valid` selector picks

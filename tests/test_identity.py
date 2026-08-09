@@ -770,3 +770,143 @@ def test_identities_are_hashable(dual_p12: bytes) -> None:
     identities = list_pkcs12_identities(dual_p12, P12_PASSWORD)
     assert len(set(identities)) == 2
     assert len({identities[0], identities[0]}) == 1
+
+
+# -- for_mtls: the 95% selector ---------------------------------------------
+
+
+def test_for_mtls_picks_the_signing_half_of_a_dual_key_pair(
+    dual_p12: bytes, dual_identities: tuple[CertBundle, ...]
+) -> None:
+    """The question nearly every caller is actually asking."""
+    from httpx_pki import for_mtls
+
+    with PKIClient(dual_p12, password=P12_PASSWORD, identity=for_mtls) as session:
+        assert session.certificate.serial_number == _serial(dual_identities, 0)
+        assert session.cert_info().extended_key_usage == ["client_auth"]
+
+
+def test_for_mtls_picks_the_current_certificate_of_a_renewal_pair(
+    ca_bundle: CertBundle,
+) -> None:
+    from httpx_pki import for_mtls
+    from httpx_pki.testing import make_pkcs12
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    old = make_client_cert(
+        "svc",
+        ca=ca_bundle,
+        not_valid_before=now - datetime.timedelta(days=300),
+        not_valid_after=now + datetime.timedelta(days=10),
+    )
+    new = make_client_cert(
+        "svc",
+        ca=ca_bundle,
+        not_valid_before=now - datetime.timedelta(days=5),
+        not_valid_after=now + datetime.timedelta(days=360),
+    )
+    blob = make_pkcs12([old, new], password=P12_PASSWORD)
+    with PKIClient(blob, password=P12_PASSWORD, identity=for_mtls) as session:
+        assert session.certificate.serial_number == new.cert.serial_number
+
+
+def test_for_mtls_does_both_at_once(ca_bundle: CertBundle) -> None:
+    """The reason it exists rather than two selectors: identity= holds one
+    value, so 'currently valid' and 'client auth' could not be combined."""
+    from httpx_pki import for_mtls
+    from httpx_pki.testing import make_pkcs12
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expired_signing = make_client_cert(
+        "svc", ca=ca_bundle, expired=True, extended_key_usage=["client_auth"]
+    )
+    current_encryption = make_client_cert(
+        "svc",
+        ca=ca_bundle,
+        key_usage=["key_encipherment"],
+        extended_key_usage=["email_protection"],
+    )
+    current_signing = make_client_cert(
+        "svc",
+        ca=ca_bundle,
+        not_valid_before=now - datetime.timedelta(days=1),
+        extended_key_usage=["client_auth"],
+    )
+    blob = make_pkcs12(
+        [expired_signing, current_encryption, current_signing],
+        password=P12_PASSWORD,
+    )
+    with PKIClient(blob, password=P12_PASSWORD, identity=for_mtls) as session:
+        assert session.certificate.serial_number == current_signing.cert.serial_number
+
+
+def test_for_mtls_accepts_a_certificate_with_no_extended_key_usage(
+    ca_bundle: CertBundle,
+) -> None:
+    """An absent extension is unconstrained in X.509, not forbidden."""
+    from httpx_pki import for_mtls
+
+    plain = make_client_cert("svc", ca=ca_bundle, extended_key_usage=[])
+    with PKIClient(plain.pem, identity=for_mtls) as session:
+        assert session.cn == "svc"
+
+
+def test_for_mtls_rejects_an_encryption_only_certificate_without_eku(
+    ca_bundle: CertBundle,
+) -> None:
+    """With no EKU to go on, KeyUsage decides: a key that cannot sign cannot
+    authenticate a TLS client."""
+    from httpx_pki import for_mtls
+
+    encryption = make_client_cert(
+        "svc", ca=ca_bundle, key_usage=["key_encipherment"], extended_key_usage=[]
+    )
+    with pytest.raises(CertificateNotFoundError):
+        PKIClient(encryption.pem, identity=for_mtls)
+
+
+def test_for_mtls_raises_when_nothing_qualifies(ca_bundle: CertBundle) -> None:
+    """It is a filter like any other: an expired or encryption-only identity is
+    never silently presented."""
+    from httpx_pki import for_mtls
+
+    expired = make_client_cert("svc", ca=ca_bundle, expired=True)
+    with pytest.raises(CertificateNotFoundError) as excinfo:
+        PKIClient(expired.pem, identity=for_mtls)
+    assert "for_mtls" in str(excinfo.value)
+
+
+def test_a_for_mtls_miss_explains_itself(ca_bundle: CertBundle) -> None:
+    """The listing must show the extended usage -- it is what was filtered on,
+    so without it the message cannot explain the miss."""
+    from httpx_pki import for_mtls
+
+    wrong = make_client_cert(
+        "svc", ca=ca_bundle, extended_key_usage=["email_protection"]
+    )
+    with pytest.raises(CertificateNotFoundError) as excinfo:
+        PKIClient(wrong.pem, identity=for_mtls)
+    assert "ext_key_usage=email_protection" in str(excinfo.value)
+
+
+def test_for_mtls_pickles_by_name(dual_p12: bytes) -> None:
+    from httpx_pki import for_mtls
+
+    session = PKIClient(dual_p12, password=P12_PASSWORD, identity=for_mtls)
+    restored = pickle.loads(pickle.dumps(session))
+    assert restored._source is not None
+    assert restored._source.args["identity"] is for_mtls
+    session.close()
+    restored.close()
+
+
+def test_for_mtls_is_spelled_the_same_in_the_environment(
+    dual_p12: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "dual.p12"
+    path.write_bytes(dual_p12)
+    monkeypatch.setenv("HTTPX_PKI_CERT", str(path))
+    monkeypatch.setenv("HTTPX_PKI_PASSWORD", P12_PASSWORD)
+    monkeypatch.setenv("HTTPX_PKI_IDENTITY", "for_mtls")
+    with PKIClient.from_env() as session:
+        assert session.cert_info().extended_key_usage == ["client_auth"]

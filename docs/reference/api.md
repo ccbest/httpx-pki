@@ -53,6 +53,10 @@ Inspect what a source holds before mounting anything — see
 
 .. autofunction:: httpx_pki.select_macos_certificate
 
+.. autofunction:: httpx_pki.for_mtls
+```
+
+```{eval-rst}
 .. autofunction:: httpx_pki.currently_valid
 ```
 

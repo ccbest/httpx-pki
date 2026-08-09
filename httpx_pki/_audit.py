@@ -83,7 +83,7 @@ class TrustSourceCerts:
 
 
 @dataclass(frozen=True)
-class ChainLink:
+class ChainLink:  # pylint: disable=too-many-instance-attributes
     """One certificate on the path from the client certificate upward.
 
     ``present`` is ``False`` for a link the chain refers to but does not carry
@@ -340,6 +340,38 @@ def walk_chain(  # pylint: disable=too-many-locals
     )
 
 
+def prune_off_path(
+    client_cert: x509.Certificate, chain: list[x509.Certificate]
+) -> tuple[list[x509.Certificate], list[x509.Certificate]]:
+    """Split *chain* into the certificates on the path and the ones that are not.
+
+    The action half of :func:`analyze_presented_chain`, over the same walk, so
+    what pruning removes is exactly what the audit would have reported. A
+    certificate nothing reaches contributes nothing to path building -- which
+    is why :func:`~httpx_pki._pkcs12.pkcs12_material` has always dropped the
+    other identities' leaves for the same reason.
+
+    Copies of the client certificate go with the dropped ones: the leaf is
+    already sent as the leaf, so a copy in the chain is duplication rather than
+    a rung.
+
+    Callers are expected to leave the material alone when *nothing* is on the
+    path -- see :func:`~httpx_pki._material._pruned`. Dropping everything would
+    turn a chain that is wrong into a chain that is absent, which reads as the
+    ordinary "the root is not included" shape and hides the fault.
+    """
+    if not chain:
+        return [], []
+    walk = walk_chain(client_cert, chain)
+    drop = {
+        cert.fingerprint(hashes.SHA256())
+        for cert in (*walk.strays, *walk.duplicates)
+    }
+    keep = [c for c in chain if c.fingerprint(hashes.SHA256()) not in drop]
+    dropped = [c for c in chain if c.fingerprint(hashes.SHA256()) in drop]
+    return keep, dropped
+
+
 def analyze_presented_chain(
     client_cert: x509.Certificate, chain: list[x509.Certificate]
 ) -> list[Problem]:
@@ -363,7 +395,10 @@ def analyze_presented_chain(
                     "the client certificate is also in its own chain, so it is "
                     "sent twice."
                 ),
-                remedy="Remove it from chain=.",
+                remedy=(
+                    "Remove it from chain=, or pass prune_chain=True to drop "
+                    "it automatically."
+                ),
                 certificates=_infos(walk.duplicates),
             )
         )
@@ -401,7 +436,10 @@ def analyze_presented_chain(
                 "They are sent for nothing, and a strict server may reject the "
                 "chain."
             ),
-            remedy="Remove them from chain=.",
+            remedy=(
+                "Remove them from chain=, or pass prune_chain=True to drop "
+                "them automatically."
+            ),
             certificates=_infos(walk.strays),
         )
     )
@@ -470,9 +508,9 @@ def analyze_certificate(client_cert: x509.Certificate) -> list[Problem]:
                     "authentication and a server enforcing EKU will reject it."
                 ),
                 remedy=(
-                    "Select the client-authentication certificate; in a "
-                    "multi-identity bundle that is usually "
-                    "key_usage='digital_signature'."
+                    "Select the client-authentication certificate. In a "
+                    "multi-identity bundle, identity=httpx_pki.for_mtls picks "
+                    "it."
                 ),
                 certificates=[info],
             )

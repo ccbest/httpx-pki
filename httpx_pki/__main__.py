@@ -54,6 +54,7 @@ def _selectors(args: argparse.Namespace) -> dict[str, object]:
         "key_usage": usages_from_string(args.key_usage),
         "extended_key_usage": usages_from_string(args.extended_key_usage),
         "chain": list(args.chain) or None,
+        "prune_chain": args.prune_chain,
         "verify": list(args.verify) if args.verify else True,
     }
 
@@ -73,6 +74,7 @@ def _explain(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse *argv* and run the named subcommand; returns the exit status."""
     parser = argparse.ArgumentParser(
         prog="python -m httpx_pki",
         description="Inspect certificate material for mTLS.",
@@ -99,9 +101,10 @@ def main(argv: list[str] | None = None) -> int:
         "--identity",
         metavar="SELECTOR",
         help=(
-            "select an identity: a position, a name substring, a fingerprint, "
-            "or 'currently_valid'. Without one, a multi-identity bundle is "
-            "listed rather than described"
+            "select an identity: 'for_mtls' (the currently valid, "
+            "client-auth-capable one -- usually what you want), a position, a "
+            "name substring, a fingerprint, or 'currently_valid'. Without one, "
+            "a multi-identity bundle is listed rather than described"
         ),
     )
     explain_parser.add_argument(
@@ -122,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         help="intermediates to present alongside the certificate; repeatable",
+    )
+    explain_parser.add_argument(
+        "--prune-chain",
+        action="store_true",
+        help="drop chain certificates that are not on this certificate's path",
     )
     explain_parser.add_argument(
         "--verify",

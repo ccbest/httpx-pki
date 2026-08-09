@@ -135,8 +135,36 @@ error the server explains badly:
 ```text
 TLSConfigWarning: 1 of 2 presented certificates ('Unrelated Root') are not on
 this certificate's chain. They are sent for nothing, and a strict server may
-reject the chain. Remove them from chain=.
+reject the chain. Remove them from chain=, or pass prune_chain=True to drop
+them automatically.
 ```
+:::
+
+### Dropping what does not belong
+
+When the extra certificates are in a source you *can* edit, remove them. When
+they are baked into a `.p12` your PKI team exported — or a file cert-manager
+rewrites on every rotation — there is nothing to edit, and `prune_chain=True`
+drops everything that is not on the path from your certificate upward:
+
+```python
+PKIClient("corp.p12", password="secret", prune_chain=True)
+```
+
+It is safe by construction: a certificate nothing reaches contributes nothing
+to path building, which is why httpx-pki has always excluded other identities'
+certificates from a multi-identity bundle's chain. It is opt-in because
+silently changing what goes on the wire is worse than the warning, and it
+survives `reload()` and pickling.
+
+:::{note}
+Pruning removes what is *unnecessary*; it cannot supply what is *missing*. If
+**nothing** in the chain is on the path, the certificates are left alone —
+dropping them all would leave a bare certificate that looks like the ordinary
+"the root is not included" shape, silencing the
+[`chain.disconnected`](inspecting-a-certificate.md) finding while the handshake
+still fails for exactly that reason. Supply the right intermediates with
+`chain=` instead.
 :::
 
 ## PKCS#7 bundles

@@ -38,6 +38,7 @@ from ._audit import (
 from ._exceptions import (
     AmbiguousCertificateError,
     CertificateLoadError,
+    CertificateNotFoundError,
     TLSConfigWarning,
 )
 from ._material import (
@@ -50,7 +51,7 @@ from ._material import (
     encode_password,
     load_material,
     read_source,
-    with_extra_chain,
+    resolve_chain,
 )
 from ._pkcs12 import IdentitySelector, P12Identity, _walk_key_bags, list_identities
 from ._select import UsageSelector
@@ -155,20 +156,26 @@ class X509Explanation:  # pylint: disable=too-many-instance-attributes
         if not self.identities:
             return []
         rows = []
+        show_eku = any(i.info.extended_key_usage for i in self.identities)
         for identity in self.identities:
             label = _clean(identity.info.common_name or "<no CN>")
             extra = (
                 f" ({_clean(identity.friendly_name)})" if identity.friendly_name else ""
             )
             usage = ",".join(sorted(identity.info.key_usage)) or "<none>"
+            row = f"[{identity.index}] {label}{extra}  key_usage={usage}"
+            # The extended usage decides whether an identity can do mTLS at
+            # all, so it is shown whenever any of them carries one -- it is
+            # what explains an identity=for_mtls miss.
+            if show_eku:
+                eku = ",".join(identity.info.extended_key_usage) or "<none>"
+                row += f"  ext_key_usage={eku}"
             rows.append(
-                f"[{identity.index}] {label}{extra}  "
-                f"key_usage={usage}  "
-                f"expires={identity.info.not_valid_after:%Y-%m-%d}"
+                f"{row}  expires={identity.info.not_valid_after:%Y-%m-%d}"
             )
         return _block("HOLDS", rows) + [""]
 
-    def _chain_lines(self) -> list[str]:
+    def _chain_lines(self) -> list[str]:  # pylint: disable=too-many-branches
         if not self.chain:
             return []
         rows: list[str] = []
@@ -277,6 +284,7 @@ def explain(  # pylint: disable=too-many-arguments,too-many-locals
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
     chain: CertSource | list[CertSource] | None = None,
+    prune_chain: bool = False,
 ) -> X509Explanation:
     """Describe what a certificate source holds and whether it will work.
 
@@ -306,7 +314,7 @@ def explain(  # pylint: disable=too-many-arguments,too-many-locals
     encoded = encode_password(password)
     identities, load_problem = _identities(data, encoded)
     material, material_problem = _material(
-        data, encoded, identity, key_usage, extended_key_usage, chain
+        data, encoded, identity, key_usage, extended_key_usage, chain, prune_chain
     )
     trust, trust_sources = _trust(verify)
 
@@ -473,6 +481,7 @@ def _material(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     key_usage: UsageSelector | None,
     extended_key_usage: UsageSelector | None,
     chain: CertSource | list[CertSource] | None,
+    prune_chain: bool = False,
 ) -> tuple[Material | None, Problem | None]:
     """The material that would be presented, or why there is none."""
     try:
@@ -491,15 +500,31 @@ def _material(  # pylint: disable=too-many-arguments,too-many-positional-argumen
                 "between them."
             ),
             remedy=(
-                "Pass identity= (index, name, or fingerprint), key_usage=, or "
-                "extended_key_usage=. For mTLS, usually "
-                "key_usage='digital_signature'."
+                "For mTLS, identity=httpx_pki.for_mtls picks the identity that "
+                "is currently valid and usable for client authentication. "
+                "Otherwise pass identity= (index, name, or fingerprint), "
+                "key_usage=, or extended_key_usage=."
+            ),
+        )
+    except CertificateNotFoundError as exc:
+        # The constructors raise this, and should: a selector that matches
+        # nothing is a caller error. A report is the wrong place to raise it,
+        # though -- someone whose selector missed is exactly who needs to see
+        # what the source holds.
+        # Only the first line: the exception carries its own listing of what
+        # the source holds, which the report has already shown under HOLDS.
+        return None, Problem(
+            code="source.no_match",
+            message=str(exc).split("\n", 1)[0].rstrip(" :"),
+            remedy=(
+                "Choose from the identities listed above, or drop the selector "
+                "to see them all."
             ),
         )
     except CertificateLoadError:
         return None, None  # already reported by _identities
     try:
-        return with_extra_chain(loaded, chain), None
+        return resolve_chain(loaded, chain, prune=prune_chain), None
     except CertificateLoadError as exc:
         return loaded, Problem(
             code="chain.unreadable",

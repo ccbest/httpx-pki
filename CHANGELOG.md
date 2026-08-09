@@ -70,6 +70,57 @@ the git history for the fine print.
   certificate was issued for something else, which is what picking the wrong
   half of a dual key pair looks like.
 
+- **New: `identity=for_mtls`, the selector to reach for first.** It picks the
+  identity that is valid right now *and* usable for TLS client authentication,
+  which between them cover the two cases that previously needed different
+  selectors: the signing half of a dual key pair, and the current certificate
+  of a renewal pair. `identity=` holds a single value, so `currently_valid` and
+  a client-auth selector could never have been combined — this is the
+  conjunction, not a third thing to choose between.
+
+  A candidate qualifies when its ExtendedKeyUsage lists `client_auth`, or when
+  it has no ExtendedKeyUsage and a KeyUsage that permits signing (an absent
+  extension is unconstrained in X.509, not forbidden; when there is no EKU to
+  go on, the handshake signature is what KeyUsage has to allow). During a
+  renewal overlap the later window wins, the same tie-break `currently_valid`
+  applies. It is a filter like any other, so nothing qualifying raises
+  `CertificateNotFoundError` rather than presenting something unusable.
+
+  Available everywhere `identity=` is — bundles, both platform stores,
+  `HTTPX_PKI_IDENTITY=for_mtls`, and `--identity for_mtls` — and it pickles by
+  name. The `source.ambiguous` and `certificate.no_client_auth` findings now
+  name it as the fix.
+
+  The identity listings in error messages and in `explain()` now show
+  `ext_key_usage` whenever any identity carries one: it is what `for_mtls`
+  filters on, so without it a miss could not explain itself.
+
+- **`httpx_pki.testing.make_client_cert()` can omit the ExtendedKeyUsage**
+  extension, by passing an empty `extended_key_usage`. A certificate with no
+  EKU is a different thing from one asserting no usages, and it is the shape
+  the selectors and the audit treat as unconstrained.
+
+- **New: `prune_chain=True` drops chain certificates that are not on the
+  path** from the client certificate upward — the fix for the `chain.stray` and
+  `chain.duplicate_leaf` findings, which previously could only be reported. It
+  is accepted by every constructor, `build_ssl_context()`, and `explain()`
+  (`--prune-chain` on the CLI), and survives `reload()` and pickling.
+
+  The case it exists for is material you cannot edit: junk baked into a `.p12`
+  your PKI team exported, or a file an agent rewrites on every rotation. A
+  `chain=` you passed yourself you can simply fix. It is safe by construction —
+  a certificate nothing reaches contributes nothing to path building, which is
+  why `pkcs12_material()` has always excluded other identities' certificates
+  for the same reason — and it reuses the audit's own chain walk, so what it
+  removes is exactly what the audit would have reported.
+
+  Opt-in, because silently changing what goes on the wire is worse than the
+  warning. And it will not prune when *nothing* is on the path: dropping every
+  certificate would leave a bare leaf, which reads as the ordinary "the root is
+  not included" shape and would silence `chain.disconnected` while the
+  handshake still failed for exactly that reason. Subtraction cannot fix an
+  absence, so the material is left alone and the diagnosis survives.
+
 - **New: `verify=` takes a list, combining trust sources.** Naming a CA bundle
   replaces the default trust rather than adding to it, so a client that talks
   to both an internal mTLS service and anything public had to build its own

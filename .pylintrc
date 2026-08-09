@@ -1,2 +1,7 @@
 [MESSAGES CONTROL]
-disable = import-outside-toplevel, duplicate-code
+# import-outside-toplevel: deferred imports keep the module dependency graph
+#   one-way (see the comments at each site).
+# cyclic-import: the same deferred imports, seen from the other side --
+#   _material is the base every module builds on, and the two modules that
+#   extend it (_pkcs12, _audit) are imported back into it lazily.
+disable = import-outside-toplevel, duplicate-code, cyclic-import

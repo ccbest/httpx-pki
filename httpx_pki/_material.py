@@ -500,25 +500,62 @@ def chain_sources(
     return [chain]
 
 
-def with_extra_chain(
-    material: Material, chain: CertSource | list[CertSource] | None
+def resolve_chain(
+    material: Material,
+    chain: CertSource | list[CertSource] | None = None,
+    *,
+    prune: bool = False,
 ) -> Material:
-    """*material* with the certificates in *chain* appended to what it presents.
+    """*material* with its presented chain finalized.
 
-    The single place ``chain=`` is applied on top of an already-loaded source,
-    shared by the session constructors, :func:`~httpx_pki.build_ssl_context`,
-    ``from_env``, and the reload path -- so a bundle that arrives without its
-    intermediates can be completed the same way whatever loaded it.
-    ``from_key_pair`` is the exception: it assembles leaf and chain together in
-    :func:`normalize_pem`, since there the leaf must be identified first.
+    The single place the chain a session presents is decided, shared by the
+    session constructors, :func:`~httpx_pki.build_ssl_context`, ``from_env``,
+    and the reload path. ``chain`` appends intermediates a source arrived
+    without; ``prune`` drops the ones that are not on the path from the leaf,
+    for material whose chain the caller cannot edit.
+
+    Both directions are here because they are one decision -- pruning must see
+    the certificates ``chain`` added, or completing a bundle and tidying it
+    would depend on the order they were applied in.
     """
     sources = chain_sources(chain)
-    if not sources:
+    if sources:
+        extra: list[bytes] = []
+        for source in sources:
+            extra.extend(load_chain_pems(source))
+        material = replace(material, ca_pems=[*material.ca_pems, *extra])
+    if not prune or not material.ca_pems:
         return material
-    extra: list[bytes] = []
-    for source in sources:
-        extra.extend(load_chain_pems(source))
-    return replace(material, ca_pems=[*material.ca_pems, *extra])
+    return _pruned(material)
+
+
+def _pruned(material: Material) -> Material:
+    """*material* without the chain certificates that are not on its path.
+
+    Deferred import: :mod:`~httpx_pki._audit` builds on this module, so the
+    dependency stays one-way -- the same arrangement :func:`parse_pkcs12` uses.
+    """
+    from ._audit import prune_off_path
+
+    try:
+        leaf = _load_certificate(material.cert_pem)
+        certs = [_load_certificate(pem) for pem in material.ca_pems]
+    except CertificateLoadError:
+        return material  # nothing to reason about; leave it exactly as it was
+    keep, dropped = prune_off_path(leaf, certs)
+    if not dropped:
+        return material
+    if not keep:
+        # Nothing was on the path, so pruning would leave a bare leaf and the
+        # material would look like the ordinary "root not included" shape --
+        # silencing chain.disconnected while the handshake still fails for
+        # exactly the reason it named. Subtraction cannot fix an absence: leave
+        # the certificates alone so the diagnosis survives.
+        return material
+    return replace(
+        material,
+        ca_pems=[c.public_bytes(serialization.Encoding.PEM) for c in keep],
+    )
 
 
 def normalize_pem(

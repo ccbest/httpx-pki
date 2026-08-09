@@ -197,7 +197,8 @@ def make_client_cert(  # pylint: disable=too-many-arguments,too-many-locals
     of clientAuth, so servers that enforce EKU accept it. Override either with
     *key_usage* / *extended_key_usage*, naming the usages the way
     :class:`~httpx_pki.CertInfo` reports them -- which is how the two halves of
-    a dual key pair are minted::
+    a dual key pair are minted. Passing an empty *extended_key_usage* omits the
+    extension altogether, which X.509 reads as unconstrained::
 
         signing = make_client_cert("me", key_usage=["digital_signature"])
         encryption = make_client_cert("me", key_usage=["key_encipherment"])
@@ -233,18 +234,24 @@ def make_client_cert(  # pylint: disable=too-many-arguments,too-many-locals
         # The extensions a CA would put on a real client certificate; strict
         # servers reject a client cert whose EKU does not include clientAuth.
         .add_extension(_key_usage_extension(key_usage), critical=True)
-        .add_extension(
-            x509.ExtendedKeyUsage(
-                [ExtendedKeyUsageOID.CLIENT_AUTH]
-                if extended_key_usage is None
-                else [
-                    eku_object_identifier(name)
-                    for name in normalize_extended_key_usages(extended_key_usage)
-                ]
-            ),
-            critical=False,
-        )
     )
+    # An empty iterable omits the extension entirely, which is a different
+    # certificate from one asserting no usages -- an absent ExtendedKeyUsage
+    # means "unconstrained" in X.509, and is what the selectors and the audit
+    # treat as permissive. None gives the clientAuth a real client certificate
+    # carries.
+    if extended_key_usage is None:
+        ekus = [ExtendedKeyUsageOID.CLIENT_AUTH]
+    else:
+        names = list(extended_key_usage)
+        ekus = [
+            eku_object_identifier(name)
+            for name in normalize_extended_key_usages(names)
+        ] if names else []
+    if ekus:
+        builder = builder.add_extension(
+            x509.ExtendedKeyUsage(ekus), critical=False
+        )
 
     sans: list[x509.GeneralName] = [x509.DNSName(n) for n in (dns_names or [])]
     sans += [x509.IPAddress(ipaddress.ip_address(a)) for a in (ip_addresses or [])]
