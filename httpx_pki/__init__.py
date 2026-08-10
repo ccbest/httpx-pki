@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._audit import ChainLink, Problem
+from ._audit import AnchorStatus, ChainLink, Problem
 from ._client import AsyncPKIClient, PKIClient
 from ._compat import HTTP_BACKEND
 from ._exceptions import (
@@ -43,6 +43,7 @@ __all__ = [
     "X509Explanation",
     "Problem",
     "ChainLink",
+    "AnchorStatus",
     "TrustAnchor",
     "build_macos_ssl_context",
     "build_windows_ssl_context",

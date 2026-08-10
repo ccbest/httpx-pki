@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
 
 from ._exceptions import TLSConfigWarning
 from ._material import CertInfo, certificate_info
@@ -80,6 +81,101 @@ class TrustSourceCerts:
     label: str
     kind: str
     certificates: list[x509.Certificate] = field(default_factory=list)
+
+
+# OpenSSL refuses keys below its configured security level, which is what
+# decides whether a small key is merely old or actually fatal. The level is a
+# build/distro setting -- 1 upstream, 2 on Debian, Ubuntu, and RHEL -- so it is
+# read at runtime rather than assumed. Each level names a bits-of-security
+# floor; these are the corresponding key sizes.
+_MIN_RSA_BITS = {0: 0, 1: 1024, 2: 2048, 3: 3072, 4: 7680, 5: 15360}
+_MIN_EC_BITS = {0: 0, 1: 160, 2: 224, 3: 256, 4: 384, 5: 512}
+
+
+def _security_level() -> int:
+    try:
+        import ssl
+
+        return int(getattr(ssl.create_default_context(), "security_level", 1))
+    except Exception:  # pylint: disable=broad-exception-caught
+        return 1  # the OpenSSL upstream default
+
+
+def _key_description(cert: x509.Certificate) -> str:
+    """The public key as a short label -- ``RSA-4096``, ``EC-secp256r1``."""
+    key = cert.public_key()
+    if isinstance(key, (rsa.RSAPublicKey, dsa.DSAPublicKey)):
+        kind = "RSA" if isinstance(key, rsa.RSAPublicKey) else "DSA"
+        return f"{kind}-{key.key_size}"
+    if isinstance(key, ec.EllipticCurvePublicKey):
+        return f"EC-{key.curve.name}"
+    if isinstance(key, ed25519.Ed25519PublicKey):
+        return "Ed25519"
+    if isinstance(key, ed448.Ed448PublicKey):
+        return "Ed448"
+    return type(key).__name__.removesuffix("PublicKey")
+
+
+def _too_weak(cert: x509.Certificate) -> str | None:
+    """Why this key is below the local security level, or ``None``."""
+    level = _security_level()
+    key = cert.public_key()
+    if isinstance(key, (rsa.RSAPublicKey, dsa.DSAPublicKey)):
+        floor = _MIN_RSA_BITS.get(level, 2048)
+        if key.key_size < floor:
+            return (
+                f"{_key_description(cert)} is below the {floor}-bit minimum "
+                f"this system's OpenSSL security level ({level}) accepts"
+            )
+    elif isinstance(key, ec.EllipticCurvePublicKey):
+        floor = _MIN_EC_BITS.get(level, 224)
+        if key.curve.key_size < floor:
+            return (
+                f"{_key_description(cert)} is below the {floor}-bit minimum "
+                f"this system's OpenSSL security level ({level}) accepts"
+            )
+    return None
+
+
+@dataclass(frozen=True)
+class AnchorStatus:
+    """One certificate offered as a trust anchor, and whether it can serve.
+
+    ``reason`` is ``None`` when the anchor is fine, and otherwise says what
+    rules it out -- in the wording the report prints. Only defects that make
+    OpenSSL reject the anchor outright are recorded: a root's *own* signature
+    algorithm is deliberately not among them, because a trust anchor is trusted
+    by fiat and its self-signature is never verified during path validation, so
+    a SHA-1 root works exactly as well as a SHA-256 one.
+    """
+
+    info: CertInfo
+    key: str
+    reason: str | None = None
+
+    @property
+    def usable(self) -> bool:
+        """Whether this certificate can anchor a chain."""
+        return self.reason is None
+
+
+def anchor_status(cert: x509.Certificate) -> AnchorStatus:
+    """Classify *cert* as a trust anchor."""
+    info = certificate_info(cert)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    reason: str | None = None
+    if now > info.not_valid_after:
+        reason = f"expired {info.not_valid_after:%Y-%m-%d}"
+    elif now < info.not_valid_before:
+        reason = f"not valid until {info.not_valid_before:%Y-%m-%d}"
+    elif _too_weak(cert) is not None:
+        reason = _too_weak(cert)
+    elif _is_ca(cert) and info.key_usage and "key_cert_sign" not in info.key_usage:
+        # An absent KeyUsage is unconstrained and fine; one that is present and
+        # omits keyCertSign is a CA forbidden from signing certificates, which
+        # OpenSSL rejects as an invalid CA.
+        reason = "asserts CA but its KeyUsage omits keyCertSign"
+    return AnchorStatus(info=info, key=_key_description(cert), reason=reason)
 
 
 @dataclass(frozen=True)
@@ -588,6 +684,7 @@ def analyze_trust_sources(
                     certificates=_infos(intermediates),
                 )
             )
+        problems += _analyze_anchors(source)
         if leaves:
             problems.append(
                 Problem(
@@ -606,6 +703,9 @@ def analyze_trust_sources(
                     certificates=_infos(leaves),
                 )
             )
+    unusable = _no_usable_anchor(sources)
+    if unusable is not None:
+        problems.append(unusable)
     return problems
 
 
@@ -617,6 +717,88 @@ def analyze_trust_sources(
 # warn_if_expires_within and strict_validity, and says it better. Saying it
 # twice would be worse than either.
 _WARNED_ELSEWHERE = frozenset({"certificate.expired", "certificate.not_yet_valid"})
+
+
+def _anchor_candidates(
+    source: TrustSourceCerts,
+) -> list[tuple[x509.Certificate, AnchorStatus]]:
+    """The certificates in *source* that are shaped like a trust anchor.
+
+    A leaf that is not self-signed is not one, and is already reported as
+    ``trust.leaf``; including it here would say the same thing twice.
+    """
+    return [
+        (cert, anchor_status(cert))
+        for cert in source.certificates
+        if _is_self_signed(cert) or _is_ca(cert)
+    ]
+
+
+def _analyze_anchors(source: TrustSourceCerts) -> list[Problem]:
+    """The one anchor defect that is fatal regardless of what else is trusted.
+
+    A CA that forbids itself from signing certificates cannot anchor anything
+    no matter how many other anchors are configured, so unlike expiry this is
+    worth saying per entry. Whether the *set* as a whole is usable is decided
+    in :func:`analyze_trust_sources`, which can see every source at once.
+    """
+    statuses = _anchor_candidates(source)
+    problems: list[Problem] = []
+
+    broken = [
+        (cert, st)
+        for cert, st in statuses
+        if st.reason and "keyCertSign" in st.reason
+    ]
+    if broken:
+        listed = ", ".join(repr(_describe(cert)) for cert, _ in broken)
+        problems.append(
+            Problem(
+                code="trust.not_a_ca",
+                message=(
+                    f"verify={source.label!r} contains "
+                    f"{_plural(len(broken), 'certificate')} ({listed}) that "
+                    "assert CA but whose KeyUsage omits keyCertSign. OpenSSL "
+                    "rejects these as invalid CAs, so they cannot anchor a "
+                    "chain."
+                ),
+                remedy="Use the CA's real certificate, or trust its issuer.",
+                certificates=[st.info for _cert, st in broken],
+            )
+        )
+
+    return problems
+
+
+def _no_usable_anchor(sources: list[TrustSourceCerts]) -> Problem | None:
+    """Whether *nothing* configured can anchor a chain.
+
+    Across every source at once, because that is how OpenSSL sees them: one
+    expired root beside a live one changes nothing, and a bundle carrying a
+    cross-signing root through a transition is the normal shape of that. The
+    certainty only exists when the whole pool is unusable -- and never when a
+    curated store is among the sources, since its contents are not parsed here
+    and are not the caller's mistake to fix.
+    """
+    if any(source.kind not in _AUDITED_KINDS for source in sources):
+        return None  # the OS store or certifi is also configured
+    statuses = [pair for source in sources for pair in _anchor_candidates(source)]
+    if not statuses or any(st.usable for _cert, st in statuses):
+        return None
+    detail = "; ".join(f"{_describe(cert)} ({st.reason})" for cert, st in statuses)
+    return Problem(
+        code="trust.no_usable_anchor",
+        message=(
+            f"none of the {_plural(len(statuses), 'configured trust anchor')} "
+            f"can be used: {detail}. Every server certificate will fail "
+            "verification."
+        ),
+        remedy=(
+            "Obtain a current CA certificate, or add another trust source -- "
+            'verify=["system", ...] keeps the OS trust store as well.'
+        ),
+        certificates=[st.info for _cert, st in statuses],
+    )
 
 
 def emit_warnings(problems: list[Problem], stacklevel: int = 4) -> None:

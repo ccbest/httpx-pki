@@ -70,6 +70,36 @@ the git history for the fine print.
   certificate was issued for something else, which is what picking the wrong
   half of a dual key pair looks like.
 
+- **New: `explain()` breaks down every trust anchor.** `TRUSTS` now lists each
+  certificate a `verify=` entry contributed with its key and expiry, and marks
+  the ones OpenSSL would reject:
+
+  ```text
+  TRUSTS     internal-ca.pem — 2 anchors
+               Corp Root CA              RSA-4096  expires 2034-01-12
+               Legacy Cross-Sign Root    RSA-2048  UNUSABLE — expired 2023-11-13
+  ```
+
+  Four anchor defects are fatal and visible in the bytes, each confirmed
+  against a real handshake: expired, not yet valid, a key below the OpenSSL
+  security level the local system is configured with (read at runtime, since
+  it is 1 upstream and 2 on Debian/Ubuntu/RHEL), and `CA:TRUE` with a KeyUsage
+  omitting `keyCertSign`.
+
+  Two new findings go with it. `trust.no_usable_anchor` fires only when
+  **nothing** configured can anchor a chain and no OS/certifi store is also
+  trusted — one dead root beside a live one is the normal shape of a bundle
+  carrying a cross-signing root through a transition, and it verifies fine, so
+  it is described rather than reported. `trust.not_a_ca` is per entry, since a
+  CA forbidden from signing certificates cannot work no matter what else is
+  configured. An unusable anchor also no longer counts as "you trust it, so it
+  need not be sent" against a chain gap.
+
+  Deliberately **not** flagged: a root signed with SHA-1. A trust anchor is
+  trusted by fiat and its own signature is never verified during path
+  validation — confirmed by handshake — so the check every naive certificate
+  scanner ships would be a false alarm on a working configuration.
+
 - **New: `identity=for_mtls`, the selector to reach for first.** It picks the
   identity that is valid right now *and* usable for TLS client authentication,
   which between them cover the two cases that previously needed different

@@ -7,6 +7,7 @@ produce a report saying why, not an exception.
 
 from __future__ import annotations
 
+import datetime
 import socket
 import warnings
 from pathlib import Path
@@ -576,3 +577,170 @@ def test_a_correct_chain_marks_nothing_off_the_path(
     report = explain(client_p12, P12_PASSWORD, chain=ca.cert_pem)
     assert all(link.on_path for link in report.chain)
     assert not any(link.sent_twice for link in report.chain)
+
+
+# -- trust anchors: what parsing alone can prove ----------------------------
+
+
+def _root(
+    cn: str,
+    *,
+    nb_days: int = 1,
+    valid_days: int = 3650,
+    bits: int = 2048,
+    cert_sign: bool = True,
+) -> x509.Certificate:
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    usage = x509.KeyUsage(
+        digital_signature=not cert_sign,
+        content_commitment=False,
+        key_encipherment=False,
+        data_encipherment=False,
+        key_agreement=False,
+        key_cert_sign=cert_sign,
+        crl_sign=True,
+        encipher_only=False,
+        decipher_only=False,
+    )
+    start = now - datetime.timedelta(days=nb_days)
+    return (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(start)
+        .not_valid_after(start + datetime.timedelta(days=valid_days))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(usage, critical=True)
+        .sign(key, hashes.SHA256())
+    )
+
+
+def _pem(*certs: x509.Certificate) -> bytes:
+    return b"".join(c.public_bytes(serialization.Encoding.PEM) for c in certs)
+
+
+def test_an_only_anchor_that_is_expired_is_fatal(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    """Verified against a real handshake: an expired anchor is rejected."""
+    path = tmp_path / "expired.pem"
+    path.write_bytes(_pem(_root("Old Root", nb_days=4000, valid_days=100)))
+    report = explain(client_p12, P12_PASSWORD, verify=str(path))
+    assert "trust.no_usable_anchor" in _codes(report)
+    assert "UNUSABLE" in str(report)
+
+
+def test_one_expired_anchor_beside_a_good_one_is_silent(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    """The noise case, and the reason the check is set-wide.
+
+    A bundle carrying a dead cross-signing root through a transition is normal,
+    and verification simply uses the live one -- confirmed by handshake.
+    """
+    path = tmp_path / "mixed.pem"
+    path.write_bytes(
+        _pem(_root("Old Root", nb_days=4000, valid_days=100), _root("Live Root"))
+    )
+    report = explain(client_p12, P12_PASSWORD, verify=str(path))
+    assert "trust.no_usable_anchor" not in _codes(report)
+    # ...but the expired one is still *described*, which is the point.
+    assert "UNUSABLE" in str(report)
+
+
+def test_expired_anchors_are_silent_when_the_os_store_is_also_trusted(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    path = tmp_path / "expired.pem"
+    path.write_bytes(_pem(_root("Old Root", nb_days=4000, valid_days=100)))
+    report = explain(client_p12, P12_PASSWORD, verify=["system", str(path)])
+    assert "trust.no_usable_anchor" not in _codes(report)
+
+
+def test_a_not_yet_valid_anchor_is_unusable(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    path = tmp_path / "future.pem"
+    path.write_bytes(_pem(_root("Future Root", nb_days=-30)))
+    report = explain(client_p12, P12_PASSWORD, verify=str(path))
+    assert "trust.no_usable_anchor" in _codes(report)
+
+
+def test_a_ca_without_key_cert_sign_is_reported(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    """OpenSSL rejects this as an invalid CA regardless of what else is
+    trusted, so it is reported per entry rather than only set-wide."""
+    path = tmp_path / "nocertsign.pem"
+    path.write_bytes(_pem(_root("Broken CA", cert_sign=False)))
+    report = explain(client_p12, P12_PASSWORD, verify=str(path))
+    assert "trust.not_a_ca" in _codes(report)
+
+
+def test_a_ca_with_no_key_usage_at_all_is_fine(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    """An absent KeyUsage is unconstrained, not forbidden -- confirmed by
+    handshake. Flagging it would break a working configuration."""
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Bare CA")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    path = tmp_path / "bare.pem"
+    path.write_bytes(_pem(cert))
+    report = explain(client_p12, P12_PASSWORD, verify=str(path))
+    assert not report.problems
+
+
+def test_the_trust_block_breaks_down_every_anchor(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    path = tmp_path / "two.pem"
+    path.write_bytes(
+        _pem(_root("Live Root"), _root("Old Root", nb_days=4000, valid_days=100))
+    )
+    rendered = str(explain(client_p12, P12_PASSWORD, verify=str(path)))
+    assert "RSA-2048" in rendered
+    assert "expires " in rendered
+    assert "UNUSABLE" in rendered
+
+
+def test_anchor_status_is_inspectable(client_p12: bytes, tmp_path: Path) -> None:
+    path = tmp_path / "mixed.pem"
+    path.write_bytes(
+        _pem(_root("Live Root"), _root("Old Root", nb_days=4000, valid_days=100))
+    )
+    report = explain(client_p12, P12_PASSWORD, verify=str(path))
+    anchors = report.trust[0].anchors
+    assert [a.usable for a in anchors] == [True, False]
+    assert anchors[0].key == "RSA-2048"
+    assert anchors[1].reason is not None and "expired" in anchors[1].reason
+
+
+def test_an_unusable_anchor_does_not_count_as_trusted_for_the_chain(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    """A chain gap whose issuer you 'trust' only via an expired anchor is not
+    one the server can be left to fill."""
+    expired_ca = tmp_path / "expired-ca.pem"
+    expired_ca.write_bytes(_pem(_root("Old Root", nb_days=4000, valid_days=100)))
+    report = explain(client_p12, P12_PASSWORD, verify=str(expired_ca))
+    assert "need not be sent" not in str(report)

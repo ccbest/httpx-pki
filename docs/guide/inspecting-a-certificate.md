@@ -164,6 +164,39 @@ connector: on the wire, attached to nothing.
 Upper case marks a fault and lower case a neutral fact, so the severity of a
 line is readable without reading the words.
 
+### What you are trusting, anchor by anchor
+
+`TRUSTS` breaks down every certificate a `verify=` entry contributed — its key,
+its expiry, and whether it can serve as an anchor at all:
+
+```text
+TRUSTS     internal-ca.pem — 2 anchors
+             Corp Root CA              RSA-4096  expires 2034-01-12
+             Legacy Cross-Sign Root    RSA-2048  UNUSABLE — expired 2023-11-13
+           the OS trust store
+```
+
+Four defects make OpenSSL reject an anchor outright, and all four are visible
+in the bytes: it is **expired**, **not yet valid**, has a **key below the local
+security level**, or asserts `CA:TRUE` while its **KeyUsage omits
+`keyCertSign`**.
+
+An anchor marked `UNUSABLE` is described, not complained about — one dead root
+beside a live one is the normal shape of a bundle carrying a cross-signing root
+through a transition, and verification simply uses the live one. It becomes
+`trust.no_usable_anchor` only when **nothing** configured can anchor a chain,
+which is a certainty rather than a guess. (A `CA:TRUE` certificate that cannot
+sign is `trust.not_a_ca` on its own, since no amount of other anchors makes it
+work.)
+
+:::{note}
+A root signed with SHA-1 is **not** flagged. A trust anchor is trusted by fiat
+and its own signature is never verified during path validation, so a SHA-1 root
+works exactly as well as a SHA-256 one — flagging it would be a false alarm on
+a working setup. Key *size* is different, and is checked against the security
+level your OpenSSL is actually configured with.
+:::
+
 ### Describing is not accusing
 
 A chain that stops before its root is the **normal** shape — the root is what

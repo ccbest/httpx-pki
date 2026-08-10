@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ._audit import (
+    AnchorStatus,
     ChainLink,
     ChainWalk,
     Problem,
@@ -33,6 +34,7 @@ from ._audit import (
     analyze_certificate,
     analyze_presented_chain,
     analyze_trust_sources,
+    anchor_status,
     walk_chain,
 )
 from ._exceptions import (
@@ -76,22 +78,57 @@ def _clean(text: str) -> str:
 
 @dataclass(frozen=True)
 class TrustAnchor:
-    """One resolved ``verify=`` entry, as the report presents it."""
+    """One resolved ``verify=`` entry, as the report presents it.
+
+    ``anchors`` carries a :class:`~httpx_pki.AnchorStatus` per certificate --
+    its key, and whether it can serve as an anchor at all -- and is empty for
+    the curated stores, whose contents are not parsed.
+    """
 
     label: str
     kind: str
-    anchors: list[CertInfo] = field(default_factory=list)
+    anchors: list[AnchorStatus] = field(default_factory=list)
 
     def __str__(self) -> str:
+        return "\n".join(self.lines())
+
+    def lines(self, name_width: int = 0, key_width: int = 0) -> list[str]:
+        """The entry as a heading, then one indented line per anchor.
+
+        The column widths are passed in so every anchor in the report lines up,
+        rather than each source aligning only against itself.
+        """
         if self.kind == "system":
-            return "the OS trust store"
+            return ["the OS trust store"]
         if self.kind == "certifi":
-            return "the certifi bundle"
-        names = ", ".join(
-            _clean(a.common_name or a.distinguished_name) for a in self.anchors
+            return ["the certifi bundle"]
+        head = f"{_clean(self.label)} — {_plural(len(self.anchors), 'anchor')}"
+        rows = [head]
+        for anchor in self.anchors:
+            name = _clean(anchor.info.common_name or anchor.info.distinguished_name)
+            # Upper case for an anchor that cannot serve, matching the chain
+            # diagram: the expiry of a working anchor is a fact, not a fault.
+            state = (
+                f"expires {anchor.info.not_valid_after:%Y-%m-%d}"
+                if anchor.usable
+                else f"UNUSABLE — {anchor.reason}"
+            )
+            rows.append(
+                f"  {name.ljust(name_width)}  {anchor.key.ljust(key_width)}  {state}"
+            )
+        return rows
+
+    def anchor_widths(self) -> tuple[int, int]:
+        """The name and key column widths this entry needs."""
+        if not self.anchors:
+            return 0, 0
+        return (
+            max(
+                len(_clean(a.info.common_name or a.info.distinguished_name))
+                for a in self.anchors
+            ),
+            max(len(a.key) for a in self.anchors),
         )
-        count = _plural(len(self.anchors), "anchor")
-        return f"{_clean(self.label)} — {count}" + (f": {names}" if names else "")
 
 
 @dataclass(frozen=True)
@@ -221,7 +258,13 @@ class X509Explanation:  # pylint: disable=too-many-instance-attributes
     def _trust_lines(self) -> list[str]:
         if not self.trust:
             return []
-        return _block("TRUSTS", [str(entry) for entry in self.trust]) + [""]
+        widths = [entry.anchor_widths() for entry in self.trust]
+        name_width = max((w[0] for w in widths), default=0)
+        key_width = max((w[1] for w in widths), default=0)
+        rows: list[str] = []
+        for entry in self.trust:
+            rows += entry.lines(name_width, key_width)
+        return _block("TRUSTS", rows) + [""]
 
     def _problem_lines(self) -> list[str]:
         if not self.problems:
@@ -394,7 +437,15 @@ def _marked(link: ChainLink, trust: list[TrustAnchor] | None) -> ChainLink:
     """*link* with ``trusted`` filled in from the resolved anchors."""
     if trust is None:
         return link
-    anchors = [anchor for entry in trust for anchor in entry.anchors]
+    # Only anchors that can actually serve: a link whose issuer is in the
+    # trust store but expired is not one the server can be left to supply, so
+    # calling it trusted would be the wrong reassurance.
+    anchors = [
+        anchor.info
+        for entry in trust
+        for anchor in entry.anchors
+        if anchor.usable
+    ]
     if not anchors and not any(e.kind in ("system", "certifi") for e in trust):
         return link
     if link.info.fingerprint_sha256:
@@ -547,7 +598,7 @@ def _trust(verify: VerifyTypes) -> tuple[list[TrustAnchor], list[TrustSourceCert
         TrustAnchor(
             label=source.label,
             kind=source.kind,
-            anchors=[certificate_info(c) for c in source.certificates],
+            anchors=[anchor_status(c) for c in source.certificates],
         )
         for source in sources
     ], sources

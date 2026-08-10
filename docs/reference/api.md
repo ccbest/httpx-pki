@@ -84,6 +84,11 @@ would present, what it would trust, and what would stop it working. See
 ```
 
 ```{eval-rst}
+.. autoclass:: httpx_pki.AnchorStatus
+   :members:
+```
+
+```{eval-rst}
 .. autoclass:: httpx_pki.TrustAnchor
 ```
 

@@ -100,6 +100,16 @@ PKIClient("client.p12", password="secret", verify=Path("system"))
 ```
 :::
 
+## Seeing what you actually trust
+
+[`explain()`](inspecting-a-certificate.md#what-you-are-trusting-anchor-by-anchor)
+lists every anchor a `verify=` resolves to, with its key and expiry, and marks
+any that OpenSSL would reject:
+
+```console
+$ python -m httpx_pki explain client.p12 --verify internal-ca.pem
+```
+
 ## Combining trust sources
 
 Naming a CA bundle **replaces** the default trust rather than adding to it —
