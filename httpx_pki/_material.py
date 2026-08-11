@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import re
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -43,6 +44,46 @@ class Material:
     key_pem: bytes
     cert_pem: bytes
     ca_pems: list[bytes] = field(default_factory=list)
+
+
+def build_material(
+    key: PrivateKeyTypes,
+    leaf: x509.Certificate,
+    chain: Iterable[x509.Certificate],
+    *,
+    exclude: Collection[bytes] = (),
+) -> Material:
+    """Canonical material for one chosen identity.
+
+    The tail every loading path shares, whatever it had to do to get here:
+    serialize the private key to unencrypted PKCS#8 PEM, the leaf certificate
+    to PEM, and whichever of *chain* belongs on the wire.
+
+    *exclude* holds DER encodings to keep out of the chain -- the **other**
+    identities' leaf certificates, in a source that holds several. Those are
+    leaves of their own, not intermediates on the way to a CA, and presenting
+    them can make a strict server reject the chain. A source with a single
+    identity passes nothing and pays for nothing: the DER is only re-encoded
+    when there is something to compare it against.
+    """
+    kept = (
+        chain
+        if not exclude
+        else [
+            cert
+            for cert in chain
+            if cert.public_bytes(serialization.Encoding.DER) not in exclude
+        ]
+    )
+    return Material(
+        key_pem=key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ),
+        cert_pem=leaf.public_bytes(serialization.Encoding.PEM),
+        ca_pems=[cert.public_bytes(serialization.Encoding.PEM) for cert in kept],
+    )
 
 
 @dataclass(frozen=True)
@@ -214,25 +255,17 @@ def parse_pem_bundle(
         extended_key_usage=extended_key_usage,
         source_kind="PEM data",
     )
-    key = pairs[chosen.index][0]
     # The other identities' certificates are leaves of their own, not
     # intermediates on the way to a CA -- keep them out of the chain, exactly
     # as the PKCS#12 path does.
-    leaves = {
-        cert.public_bytes(serialization.Encoding.DER) for _key, cert in pairs
-    }
-    key_pem = key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
+    return build_material(
+        pairs[chosen.index][0],
+        chosen.certificate,
+        certs,
+        exclude={
+            cert.public_bytes(serialization.Encoding.DER) for _key, cert in pairs
+        },
     )
-    cert_pem = chosen.certificate.public_bytes(serialization.Encoding.PEM)
-    ca_pems = [
-        c.public_bytes(serialization.Encoding.PEM)
-        for c in certs
-        if c.public_bytes(serialization.Encoding.DER) not in leaves
-    ]
-    return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
 
 
 def _pem_pairs(
@@ -589,14 +622,7 @@ def normalize_pem(
     for source in chain_sources(chain):
         intermediates.extend(_load_certificates(read_source(source)))
 
-    key_pem = key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    cert_pem = leaf.public_bytes(serialization.Encoding.PEM)
-    ca_pems = [c.public_bytes(serialization.Encoding.PEM) for c in intermediates]
-    return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
+    return build_material(key, leaf, intermediates)
 
 
 # The KeyUsage bits, under the cryptography attribute names, in RFC 5280 order.

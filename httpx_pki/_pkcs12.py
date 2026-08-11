@@ -51,6 +51,7 @@ from ._material import (
     Password,
     _pkcs12_failure_message,
     _spki,
+    build_material,
     certificate_info,
     encode_password,
     pem_identities,
@@ -695,21 +696,12 @@ def pkcs12_material(
         key_usage=key_usage,
         extended_key_usage=extended_key_usage,
     )
-    selected = bundle.identities[chosen.index]
-    leaves = {
-        loaded.identity.certificate.public_bytes(serialization.Encoding.DER)
-        for loaded in bundle.identities
-    }
-
-    key_pem = selected.key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
+    return build_material(
+        bundle.identities[chosen.index].key,
+        chosen.certificate,
+        bundle.certificates,
+        exclude={
+            loaded.identity.certificate.public_bytes(serialization.Encoding.DER)
+            for loaded in bundle.identities
+        },
     )
-    cert_pem = chosen.certificate.public_bytes(serialization.Encoding.PEM)
-    ca_pems = [
-        cert.public_bytes(serialization.Encoding.PEM)
-        for cert in bundle.certificates
-        if cert.public_bytes(serialization.Encoding.DER) not in leaves
-    ]
-    return Material(key_pem=key_pem, cert_pem=cert_pem, ca_pems=ca_pems)
