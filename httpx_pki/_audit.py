@@ -92,15 +92,6 @@ _MIN_RSA_BITS = {0: 0, 1: 1024, 2: 2048, 3: 3072, 4: 7680, 5: 15360}
 _MIN_EC_BITS = {0: 0, 1: 160, 2: 224, 3: 256, 4: 384, 5: 512}
 
 
-def _security_level() -> int:
-    try:
-        import ssl
-
-        return int(getattr(ssl.create_default_context(), "security_level", 1))
-    except Exception:  # pylint: disable=broad-exception-caught
-        return 1  # the OpenSSL upstream default
-
-
 def _key_description(cert: x509.Certificate) -> str:
     """The public key as a short label -- ``RSA-4096``, ``EC-secp256r1``."""
     key = cert.public_key()
@@ -118,7 +109,14 @@ def _key_description(cert: x509.Certificate) -> str:
 
 def _too_weak(cert: x509.Certificate) -> str | None:
     """Why this key is below the local security level, or ``None``."""
-    level = _security_level()
+    try:
+        import ssl
+
+        level = int(getattr(ssl.create_default_context(), "security_level", 1))
+    except Exception:  # pylint: disable=broad-exception-caught
+        # Fall back to 1, OpenSSL's upstream default, when the level cannot be
+        # read: guessing high would fault keys the local build accepts.
+        level = 1
     key = cert.public_key()
     if isinstance(key, (rsa.RSAPublicKey, dsa.DSAPublicKey)):
         floor = _MIN_RSA_BITS.get(level, 2048)

@@ -23,7 +23,6 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from ._audit import (
-    Problem,
     TrustSourceCerts,
     analyze_certificate,
     analyze_presented_chain,
@@ -237,64 +236,48 @@ def _audit(material: Material, trust_sources: list[TrustSourceCerts]) -> None:
     exists to explain a handshake that would have failed anyway, and a bug in
     it must not be the reason a load stops working. Warnings it does raise are
     ordinary :class:`~httpx_pki.TLSConfigWarning`\\ s and can be filtered.
+
+    :func:`~httpx_pki.explain` runs the same three analyzers over the same
+    material, which is what keeps a report from contradicting the warning that
+    sent someone to it. It composes them itself rather than calling this,
+    because it also walks the chain and verifies signatures -- work the
+    construction path deliberately does not do.
     """
     try:
-        emit_warnings(analyze(material, trust_sources))
+        client_cert = _load_certificate(material.cert_pem)
+        chain = [_load_certificate(pem) for pem in material.ca_pems]
+        emit_warnings(
+            [
+                *analyze_certificate(client_cert),
+                *analyze_trust_sources(trust_sources, client_cert),
+                *analyze_presented_chain(client_cert, chain),
+            ]
+        )
     except Exception:  # pylint: disable=broad-exception-caught
         pass
-
-
-def analyze(
-    material: Material, trust_sources: list[TrustSourceCerts]
-) -> list[Problem]:
-    """Every problem with *material* and the trust sources it will be used with.
-
-    Shared by the construction-path warnings and :func:`~httpx_pki.explain`, so
-    a report can never contradict the warning that sent someone to it.
-    """
-    client_cert = _load_certificate(material.cert_pem)
-    chain = [_load_certificate(pem) for pem in material.ca_pems]
-    return [
-        *analyze_certificate(client_cert),
-        *analyze_trust_sources(trust_sources, client_cert),
-        *analyze_presented_chain(client_cert, chain),
-    ]
 
 
 def _offer_post_handshake_auth(ctx: ssl.SSLContext) -> None:
     """Offer TLS 1.3 post-handshake authentication (RFC 8446 section 4.6.2).
 
-    A server that wants the client certificate only on *some* routes cannot
-    know which route was asked for until it has read the request -- which is
-    after the handshake. Through TLS 1.2 it got the certificate by
-    renegotiating; TLS 1.3 removed renegotiation and replaced it, for this
-    case, with a bare ``CertificateRequest`` the server may send once the
-    handshake is done. Kestrel's ``ClientCertificateMode.DelayCertificate``,
-    mod_ssl's per-``<Location>`` ``SSLVerifyClient``, and IIS's per-path
-    negotiate-client-certificate all land here on a TLS 1.3 connection.
+    For servers that ask for the client certificate only on *some* routes:
+    Kestrel's ``ClientCertificateMode.DelayCertificate``, mod_ssl's
+    per-``<Location>`` ``SSLVerifyClient``, IIS's per-path
+    negotiate-client-certificate.
 
-    A server may only ask a client that advertised willingness in its
-    ClientHello, so this has to be decided before the connection carries
-    anything -- there is nothing to negotiate per-request. A server that asks
-    one which did not gets ``EXTENSION_NOT_RECEIVED`` and drops the
-    connection, which reaches the caller as an unexplained EOF on a handshake
-    that appeared to succeed. Since every context built here exists to present
-    a client certificate, and already presents it unasked during the
-    handshake, offering to present it later too costs nothing.
+    Offered unconditionally because it cannot be offered later: a server may
+    only ask a client that advertised willingness in its ClientHello, and one
+    that asks a client which did not drops the connection -- surfacing as an
+    unexplained EOF on a handshake that appeared to succeed. Every context
+    built here presents a client certificate anyway, so this costs nothing.
 
-    The attribute is compiled in only when the interpreter's OpenSSL has TLS
-    1.3, so it is set defensively: where it is missing there is no
-    post-handshake auth to offer in the first place.
+    Set defensively: the attribute is compiled in only where the interpreter's
+    OpenSSL has TLS 1.3.
     """
     try:
         ctx.post_handshake_auth = True
     except (AttributeError, NotImplementedError):  # pragma: no cover
         pass
-
-
-def _is_system(source: TrustSource) -> bool:
-    """Whether *source* names the OS trust store."""
-    return source is True or (isinstance(source, str) and source == "system")
 
 
 def _normalize_trust_sources(verify: VerifyTypes) -> list[TrustSource]:
@@ -505,7 +488,9 @@ def _server_trust(
     parts: list[str] = []
     use_system = False
     for source in sources:
-        if _is_system(source):
+        # True and the literal "system" both name the OS trust store; the
+        # string spelling is kept from when the OS store was opt-in.
+        if source is True or (isinstance(source, str) and source == "system"):
             use_system = True
             described.append(
                 TrustSourceCerts(label="system", kind="system")
@@ -515,7 +500,9 @@ def _server_trust(
         parts.append(text)
         described.append(
             TrustSourceCerts(
-                label=_label(source), kind=_kind(source), certificates=certs
+                label=source if isinstance(source, str) else str(source),
+                kind=_kind(source),
+                certificates=certs,
             )
         )
     cadata = "".join(parts)
@@ -528,10 +515,6 @@ def _server_trust(
     # Passing cadata is also what keeps create_default_context from mixing in
     # the OS default CAs, which is the whole point of naming a bundle.
     return ssl.create_default_context(cadata=cadata), described
-
-
-def _label(source: TrustSource) -> str:
-    return source if isinstance(source, str) else str(source)
 
 
 def _kind(source: TrustSource) -> str:

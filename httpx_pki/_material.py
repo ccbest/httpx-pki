@@ -406,21 +406,6 @@ def _spki(public_key: PublicKeyTypes) -> bytes:
     )
 
 
-def _verify_key_matches_cert(
-    key: PrivateKeyTypes, cert: x509.Certificate
-) -> None:
-    """Raise if *key* is not the private half of *cert*'s public key.
-
-    A mismatched key and certificate -- common when a ``.pem`` is assembled by
-    hand from the wrong pieces -- otherwise surfaces only as an inscrutable
-    OpenSSL handshake error.
-    """
-    if _spki(key.public_key()) != _spki(cert.public_key()):
-        raise CertificateLoadError(
-            "private key does not match certificate (their public keys differ)"
-        )
-
-
 def _split_leaf_and_chain(
     key: PrivateKeyTypes, certs: list[x509.Certificate]
 ) -> tuple[x509.Certificate, list[x509.Certificate]]:
@@ -472,17 +457,6 @@ def _maybe_pkcs7_certificates(data: bytes) -> list[x509.Certificate] | None:
     return certs
 
 
-def _pkcs7_cadata(data: bytes) -> str | None:
-    """PEM text of a certs-only PKCS#7 bundle, for ``SSLContext`` ``cadata``
-    loading; ``None`` if *data* isn't PKCS#7."""
-    certs = _maybe_pkcs7_certificates(data)
-    if certs is None:
-        return None
-    return b"".join(
-        c.public_bytes(serialization.Encoding.PEM) for c in certs
-    ).decode("ascii")
-
-
 def _load_certificates(data: bytes) -> list[x509.Certificate]:
     """Load every certificate in *data* (PEM may hold several; DER holds one;
     a certs-only PKCS#7 bundle may hold several)."""
@@ -512,14 +486,6 @@ def _load_private_key(
             raise CertificateLoadError(
                 "could not parse private key (wrong password?)"
             ) from exc
-
-
-def load_chain_pems(source: CertSource) -> list[bytes]:
-    """PEM-encode every certificate in *source* (PEM, possibly several, or DER)."""
-    return [
-        c.public_bytes(serialization.Encoding.PEM)
-        for c in _load_certificates(read_source(source))
-    ]
 
 
 def chain_sources(
@@ -555,7 +521,12 @@ def resolve_chain(
     if sources:
         extra: list[bytes] = []
         for source in sources:
-            extra.extend(load_chain_pems(source))
+            # Each source may itself hold several certificates (a concatenated
+            # PEM, or a certs-only PKCS#7); PEM-encode every one of them.
+            extra.extend(
+                c.public_bytes(serialization.Encoding.PEM)
+                for c in _load_certificates(read_source(source))
+            )
         material = replace(material, ca_pems=[*material.ca_pems, *extra])
     if not prune or not material.ca_pems:
         return material
@@ -614,7 +585,13 @@ def normalize_pem(
     key = _load_private_key(read_source(private_key), encode_password(password))
     if len(certs) == 1:
         leaf = certs[0]
-        _verify_key_matches_cert(key, leaf)
+        # A mismatched key and certificate -- common when a .pem is assembled
+        # by hand from the wrong pieces -- otherwise surfaces only as an
+        # inscrutable OpenSSL handshake error.
+        if _spki(key.public_key()) != _spki(leaf.public_key()):
+            raise CertificateLoadError(
+                "private key does not match certificate (their public keys differ)"
+            )
         intermediates: list[x509.Certificate] = []
     else:
         leaf, intermediates = _split_leaf_and_chain(key, certs)

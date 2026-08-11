@@ -106,17 +106,6 @@ def _no_password_message(source: SourceRef) -> str:
     )
 
 
-def _mount_shadows_tls(pattern: object) -> bool:
-    """Whether an httpx mount pattern would handle https traffic.
-
-    httpx mount keys look like ``"all://"``, ``"https://"``, or
-    ``"https://example.com"``. A mount shadows the client certificate only if it
-    intercepts https -- i.e. its scheme is ``https`` or the ``all`` wildcard.
-    """
-    scheme = str(pattern).split("://", 1)[0].lower()
-    return scheme in ("", "all", "https")
-
-
 class _PKIMixin:  # pylint: disable=too-many-instance-attributes
     _material: Material
     _verify_policy: VerifyTypes
@@ -799,7 +788,13 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         the inner transport (see :func:`~httpx_pki.build_ssl_context`).
         """
         mounts = kwargs.get("mounts") or {}
-        shadows_tls = any(_mount_shadows_tls(pattern) for pattern in mounts)
+        # httpx mount keys look like "all://", "https://", or
+        # "https://example.com"; one shadows the client certificate only if it
+        # intercepts https -- its scheme is https or the "all" wildcard.
+        shadows_tls = any(
+            str(pattern).split("://", 1)[0].lower() in ("", "all", "https")
+            for pattern in mounts
+        )
         if kwargs.get("transport") is not None or shadows_tls:
             warnings.warn(
                 "a custom transport=/mounts= makes httpx ignore verify=, so the "

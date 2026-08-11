@@ -167,9 +167,21 @@ class _ForMTLS:
         now = datetime.datetime.now(datetime.timezone.utc)
         if not info.not_valid_before <= now <= info.not_valid_after:
             return False
-        return usable_for_client_auth(
-            info.key_usage, info.extended_key_usage
-        )
+        # Two extensions have a say about client authentication, and an
+        # *absent* one is permissive in X.509: it means "unconstrained", not
+        # "forbidden".
+        #
+        # ExtendedKeyUsage decides first. Present and listing client_auth: yes.
+        # Present and not listing it: no -- the CA said what this certificate
+        # is for, and it is not this. Absent: no opinion, so fall through.
+        if info.extended_key_usage:
+            return "client_auth" in info.extended_key_usage
+        # KeyUsage then has to allow the handshake signature. A TLS client
+        # proves possession of its key by signing, so digital_signature is
+        # required when KeyUsage is asserted at all. This is what separates the
+        # halves of a dual key pair that carry no EKU: the encryption half
+        # asserts only key_encipherment and cannot sign.
+        return not info.key_usage or "digital_signature" in info.key_usage
 
     # A tie between candidates that are all usable is a renewal overlap, which
     # is exactly what currently_valid already resolves: prefer the latest
@@ -184,29 +196,6 @@ class _ForMTLS:
     def __reduce__(self) -> str:
         # Pickle by name, so an unpickled SourceRef holds this same instance.
         return "for_mtls"
-
-
-def usable_for_client_auth(
-    key_usage: frozenset[str], extended_key_usage: Sequence[str]
-) -> bool:
-    """Whether a certificate with these usages can authenticate a TLS client.
-
-    Two extensions have a say, and an *absent* extension is permissive in
-    X.509: it means "unconstrained", not "forbidden".
-
-    ExtendedKeyUsage decides first. Present and listing ``client_auth``: yes.
-    Present and not listing it: no -- the CA said what this certificate is for,
-    and it is not this. Absent: no opinion, so fall through.
-
-    KeyUsage then has to allow the handshake signature. A TLS client proves
-    possession of its key by signing, so ``digital_signature`` is required when
-    KeyUsage is asserted at all. This is what separates the halves of a dual
-    key pair that carry no EKU: the encryption half asserts only
-    ``key_encipherment`` and cannot sign.
-    """
-    if extended_key_usage:
-        return "client_auth" in extended_key_usage
-    return not key_usage or "digital_signature" in key_usage
 
 
 currently_valid = _CurrentlyValid()
@@ -316,7 +305,9 @@ def normalize_extended_key_usages(value: UsageSelector) -> list[str]:
     resolved = []
     for name in _as_names(value, "extended_key_usage"):
         canonical = _EKU_BY_SQUASHED.get(_squash(name))
-        if canonical is None and _looks_like_oid(name):
+        # More than two all-digit components: a dotted OID rather than a name.
+        parts = name.split(".")
+        if canonical is None and len(parts) > 2 and all(p.isdigit() for p in parts):
             # Name it if cryptography knows it, so it compares equal to what
             # CertInfo reports; otherwise keep the dotted form.
             canonical = _EKU_NAMES.get(x509.ObjectIdentifier(name), name)
@@ -335,11 +326,6 @@ def eku_object_identifier(name: str) -> x509.ObjectIdentifier:
         if known == name:
             return oid
     return x509.ObjectIdentifier(name)
-
-
-def _looks_like_oid(value: str) -> bool:
-    parts = value.split(".")
-    return len(parts) > 2 and all(part.isdigit() for part in parts)
 
 
 def matches_usages(

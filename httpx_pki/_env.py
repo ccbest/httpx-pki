@@ -50,23 +50,6 @@ from ._select import selector_from_string, usages_from_string
 from ._ssl import TrustSource, VerifyTypes
 
 
-def _env_selectors(prefix: str) -> dict[str, Any]:
-    """Read the identity selectors from ``{prefix}IDENTITY`` and friends.
-
-    ``IDENTITY`` is a file position when it reads as an integer, the
-    :data:`~httpx_pki.currently_valid` selector when it is that exact literal,
-    and a name (or fingerprint) otherwise; the usage variables are
-    comma-separated lists.
-    """
-    return {
-        "identity": selector_from_string(os.environ.get(f"{prefix}IDENTITY")),
-        "key_usage": usages_from_string(os.environ.get(f"{prefix}KEY_USAGE")),
-        "extended_key_usage": usages_from_string(
-            os.environ.get(f"{prefix}EXT_KEY_USAGE")
-        ),
-    }
-
-
 def resolve_env_material(prefix: str) -> tuple[Material, VerifyTypes]:
     """Read the ``{prefix}*`` variables into material and a ``verify`` value."""
     cert = os.environ.get(f"{prefix}CERT")
@@ -79,7 +62,16 @@ def resolve_env_material(prefix: str) -> tuple[Material, VerifyTypes]:
     chain = os.environ.get(f"{prefix}CHAIN")
     ca = os.environ.get(f"{prefix}CA")
 
-    selectors = _env_selectors(prefix)
+    # IDENTITY is a file position when it reads as an integer, currently_valid
+    # or for_mtls for those exact literals, and a name (or fingerprint)
+    # otherwise; the usage variables are comma-separated lists.
+    selectors: dict[str, Any] = {
+        "identity": selector_from_string(os.environ.get(f"{prefix}IDENTITY")),
+        "key_usage": usages_from_string(os.environ.get(f"{prefix}KEY_USAGE")),
+        "extended_key_usage": usages_from_string(
+            os.environ.get(f"{prefix}EXT_KEY_USAGE")
+        ),
+    }
     if key:
         if any(value is not None for value in selectors.values()):
             raise CertificateLoadError(
