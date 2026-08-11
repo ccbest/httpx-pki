@@ -364,21 +364,30 @@ def matches_usages(
     return True
 
 
-# -- store selection --------------------------------------------------------
+# -- matching a textual identity= -------------------------------------------
+
+# How a surface names its candidates, subject common name first: the Windows
+# friendly name, the keychain label, the PKCS#12 bag name.
+Aliases = Callable[[Any], "tuple[str | None, ...]"]
 
 
-def _matches_identity(
-    candidate: _StoreCert,
-    needle: str,
-    aliases: Callable[[Any], tuple[str | None, ...]],
-) -> bool:
-    """Match a string ``identity=`` against one store candidate.
+def matches_alias(candidate: _StoreCert, needle: str, aliases: Aliases) -> bool:
+    """Match a string ``identity=`` against one candidate.
 
-    Mirrors the bundle rule in :func:`~httpx_pki._pkcs12._matches_name`: a
-    full-length hex digest is an exact fingerprint comparison, anything else a
-    case-insensitive substring of the candidate's aliases. Keeping the two
-    identical is what lets ``identity="ACME"`` mean the same thing whether the
-    source is a ``.p12`` or the Windows store.
+    One rule, wherever the candidate came from: a full-length hex digest is an
+    exact fingerprint comparison (SHA-1 or SHA-256, with colons, spaces, and
+    case ignored), and anything else is a case-insensitive substring of the
+    candidate's names -- those *aliases* reports, plus the full subject DN,
+    which every candidate has. That is what lets ``identity="ACME"`` mean the
+    same thing whether the source is a ``.p12`` bundle, the Windows store, or
+    the macOS keychain: one implementation, rather than two that have to be
+    kept in step by hand.
+
+    The subject is included here rather than left to each caller because
+    ``identity=`` is the *portable* spelling, and a DN pasted out of
+    ``openssl x509 -subject`` has to select the same certificate everywhere.
+    The platform-flavored ``name=`` is a different question and keeps its own
+    documented aliases -- it never comes through here.
     """
     target = normalize_thumbprint(needle)
     if len(target) in (40, 64) and all(c in "0123456789ABCDEF" for c in target):
@@ -386,11 +395,16 @@ def _matches_identity(
         if candidate.info is not None:
             digests.add(candidate.info.fingerprint_sha256)
         return target in digests
+    info = candidate.info
+    subject = info.distinguished_name if info is not None else None
     lowered = needle.lower()
     return any(
         alias is not None and lowered in alias.lower()
-        for alias in aliases(candidate)
+        for alias in (*aliases(candidate), subject)
     )
+
+
+# -- store selection --------------------------------------------------------
 
 
 def select_certificate(  # pylint: disable=too-many-arguments
@@ -415,6 +429,10 @@ def select_certificate(  # pylint: disable=too-many-arguments
     ``identity=currently_valid`` picks the certificate whose validity window
     contains now, preferring the renewed one during a renewal overlap.
 
+    *aliases* extracts a candidate's names, **subject common name first**;
+    ``identity`` additionally matches the full subject DN (see
+    :func:`matches_alias`).
+
     ``name``/``thumbprint`` are the unambiguous spellings; ``identity`` is the
     portable one, accepting exactly what a PKCS#12 or PEM bundle's ``identity``
     does apart from an integer position -- a store has no stable ordering, so
@@ -437,7 +455,7 @@ def select_certificate(  # pylint: disable=too-many-arguments
     if identity is not None:
         if isinstance(identity, str):
             needle = identity
-            matches = [c for c in matches if _matches_identity(c, needle, aliases)]
+            matches = [c for c in matches if matches_alias(c, needle, aliases)]
         else:
             matches = [c for c in matches if identity(c)]
     if name is not None:
@@ -457,38 +475,64 @@ def select_certificate(  # pylint: disable=too-many-arguments
     if identity is not None:
         matches = _narrowed(identity, matches)
 
-    selector = _selector_repr(
-        name, thumbprint, identity, key_usage, extended_key_usage
+    selector = selector_repr(
+        name=name,
+        thumbprint=thumbprint,
+        identity=identity,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
     )
+    # The common name comes first by the aliases convention, so anything after
+    # it is the store's own label -- a Windows friendly name, a keychain label
+    # -- which is often the only thing an operator recognizes.
+    def nickname(candidate: Any) -> str | None:
+        return next((a for a in aliases(candidate)[1:] if a), None)
+
     if not matches:
         raise CertificateNotFoundError(
             f"{selector} matched no certificate in the store, which holds:"
-            f"\n{_listing(candidates)}"
+            f"\n{listing(candidates, nickname=nickname)}"
         )
     if len(matches) > 1:
         raise AmbiguousCertificateError(
             f"{selector} matched {len(matches)} certificates:"
-            f"\n{_listing(matches)}\n"
+            f"\n{listing(matches, nickname=nickname)}\n"
             "Narrow it with a more specific name, a key usage, or an exact "
             "thumbprint."
         )
     return matches[0]
 
 
-def _listing(candidates: Sequence[_StoreCert]) -> str:
+def listing(
+    candidates: Sequence[_StoreCert],
+    *,
+    prefix: Callable[[Any], str] = lambda _candidate: "",
+    nickname: Callable[[Any], str | None] = lambda _candidate: None,
+) -> str:
     """The candidates as one indented line each, for an error message.
 
     Everything that plausibly distinguishes two entries is on the line: the
     usage separates the halves of a dual key pair, and the expiry separates a
     renewed certificate from the one it replaces -- both of which a real store
-    holds side by side.
+    or bundle holds side by side. The extended usage appears when any candidate
+    carries one, since that is what :data:`for_mtls` filters on and therefore
+    what explains a miss.
+
+    One layout for every surface, so the listing that explains a failed
+    ``identity=`` reads the same wherever it came from. *prefix* is what a
+    bundle puts in front of the name (its ``[index]``, the one thing a store
+    has no equivalent of, having no stable ordering) and *nickname* the label
+    the source attached, if any.
     """
     lines = []
     show_eku = any(c.extended_key_usage for c in candidates)
     for candidate in candidates:
-        parts = [f"  {candidate.subject_cn or '<no CN>'}"]
-        if candidate.key_usage:
-            parts.append(f"key_usage={','.join(sorted(candidate.key_usage))}")
+        parts = [f"  {prefix(candidate)}{candidate.subject_cn or '<no CN>'}"]
+        label = nickname(candidate)
+        if label:
+            parts.append(f"({label})")
+        usage = ",".join(sorted(candidate.key_usage)) or "<none>"
+        parts.append(f"key_usage={usage}")
         if show_eku:
             eku = ",".join(candidate.extended_key_usage) or "<none>"
             parts.append(f"ext_key_usage={eku}")
@@ -499,13 +543,15 @@ def _listing(candidates: Sequence[_StoreCert]) -> str:
     return "\n".join(lines) if lines else "  (nothing)"
 
 
-def _selector_repr(  # pylint: disable=too-many-arguments
-    name: str | None,
-    thumbprint: str | None,
-    identity: object,
+def selector_repr(  # pylint: disable=too-many-arguments
+    *,
+    name: str | None = None,
+    thumbprint: str | None = None,
+    identity: object = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
 ) -> str:
+    """The selectors that were given, as ``k=v + k=v``, for an error message."""
     described = []
     if thumbprint is not None:
         described.append(f"thumbprint={thumbprint!r}")

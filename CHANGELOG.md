@@ -125,6 +125,25 @@ the git history for the fine print.
   `ext_key_usage` whenever any identity carries one: it is what `for_mtls`
   filters on, so without it a miss could not explain itself.
 
+- **`identity=` now matches the full subject DN on the platform stores**, as it
+  always has on PKCS#12 and PEM bundles. `identity="CN=ACME Client"` — a DN
+  pasted out of `openssl x509 -subject`, `certutil`, or an `explain()` report —
+  selected from a `.p12` and raised `CertificateNotFoundError` against the
+  Windows store and the macOS keychain. `identity=` is the portable spelling
+  and is meant to mean the same thing wherever the certificate came from, so
+  now it does; there is one implementation of the rule behind both.
+
+  Only `identity=` widens. `name=` is the platform-flavored spelling and stays
+  what it is documented as: the subject common name or the store's friendly
+  name / keychain label.
+
+- **Selection errors list candidates the same way everywhere.** The listing a
+  store prints when a selector misses (or matches too much) gained the two
+  things the bundle listing already had: the friendly name or keychain label
+  in parentheses, and `key_usage=<none>` spelled out rather than omitted when
+  a certificate asserts none. A bundle keeps its `[index]` prefix — the one
+  thing a store has no equivalent of, having no stable ordering.
+
 - **`httpx_pki.testing.make_client_cert()` can omit the ExtendedKeyUsage**
   extension, by passing an empty `extended_key_usage`. A certificate with no
   EKU is a different thing from one asserting no usages, and it is the shape

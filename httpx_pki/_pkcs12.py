@@ -61,8 +61,10 @@ from ._select import (
     UsageSelector,
     _CertDetails,
     _narrowed,
+    listing,
+    matches_alias,
     matches_usages,
-    normalize_thumbprint,
+    selector_repr,
 )
 
 
@@ -484,25 +486,6 @@ def list_identities(
 # -- selection --------------------------------------------------------------
 
 
-def _matches_name(identity: P12Identity, needle: str) -> bool:
-    """Fingerprint equality for a hex digest, else a case-insensitive substring."""
-    target = normalize_thumbprint(needle)
-    if len(target) in (40, 64) and all(c in "0123456789ABCDEF" for c in target):
-        return target in (
-            identity.info.fingerprint_sha1,
-            identity.info.fingerprint_sha256,
-        )
-    lowered = needle.lower()
-    return any(
-        alias is not None and lowered in alias.lower()
-        for alias in (
-            identity.friendly_name,
-            identity.info.common_name,
-            identity.info.distinguished_name,
-        )
-    )
-
-
 def select_identity(
     identities: list[P12Identity],
     *,
@@ -528,15 +511,9 @@ def select_identity(
     would be an arbitrary choice between real alternatives.
     """
     matches = list(identities)
-    described: list[str] = []
 
     if identity is not None:
-        described.append(f"identity={identity!r}")
         matches = _apply_identity_selector(matches, identity, len(identities))
-    if key_usage is not None:
-        described.append(f"key_usage={key_usage!r}")
-    if extended_key_usage is not None:
-        described.append(f"extended_key_usage={extended_key_usage!r}")
     if key_usage is not None or extended_key_usage is not None:
         # Shared with the platform stores so the two never drift; it also
         # validates the names, so a typo raises here rather than matching
@@ -549,14 +526,18 @@ def select_identity(
         # (currently_valid) must never override an explicit usage selector.
         matches = _narrowed(identity, matches)
 
-    selector = " + ".join(described)
+    selector = selector_repr(
+        identity=identity,
+        key_usage=key_usage,
+        extended_key_usage=extended_key_usage,
+    )
     if not matches:
         raise CertificateNotFoundError(
             f"{selector} matched no identity in the {source_kind}, which holds:"
             f"\n{_listing(identities)}"
         )
     if len(matches) > 1:
-        if not selector:
+        if identity is None and key_usage is None and extended_key_usage is None:
             raise AmbiguousCertificateError(
                 f"this {source_kind} holds {len(matches)} identities:"
                 f"\n{_listing(matches)}\n"
@@ -582,7 +563,12 @@ def _apply_identity_selector(
         wanted = selector if selector >= 0 else total + selector
         return [i for i in matches if i.index == wanted]
     if isinstance(selector, str):
-        return [i for i in matches if _matches_name(i, selector)]
+        # A bundle's own names, common name first; matches_alias adds the
+        # subject DN. PEM carries no labels, so friendly_name is PKCS#12-only.
+        def aliases(i: P12Identity) -> tuple[str | None, ...]:
+            return (i.info.common_name, i.friendly_name)
+
+        return [i for i in matches if matches_alias(i, selector, aliases)]
     if callable(selector):
         return [i for i in matches if selector(i)]
     raise TypeError(
@@ -595,26 +581,15 @@ def _apply_identity_selector(
 def _listing(identities: list[P12Identity]) -> str:
     """The identities as one indented line each, for an error message.
 
-    Everything that plausibly distinguishes two identities is on the line: the
-    usage separates a dual key pair, and the expiry separates a renewed
-    certificate from the one it replaces (which share everything else). The
-    extended usage appears when any identity carries one, since that is what
-    :data:`~httpx_pki.for_mtls` filters on and therefore what explains a miss.
+    The shared layout (:func:`~httpx_pki._select.listing`) plus the one thing
+    only a bundle has: a stable position, which is also the simplest way to
+    select one.
     """
-    lines = []
-    show_eku = any(i.info.extended_key_usage for i in identities)
-    for i in identities:
-        parts = [f"  [{i.index}] {i.info.common_name or '<no CN>'}"]
-        if i.friendly_name:
-            parts.append(f"({i.friendly_name})")
-        parts.append(f"key_usage={','.join(sorted(i.info.key_usage)) or '<none>'}")
-        if show_eku:
-            eku = ",".join(i.info.extended_key_usage) or "<none>"
-            parts.append(f"ext_key_usage={eku}")
-        parts.append(f"expires={i.info.not_valid_after:%Y-%m-%d}")
-        parts.append(i.info.fingerprint_sha1)
-        lines.append(" ".join(parts))
-    return "\n".join(lines)
+    return listing(
+        identities,
+        prefix=lambda i: f"[{i.index}] ",
+        nickname=lambda i: i.friendly_name,
+    )
 
 
 # -- material ---------------------------------------------------------------
