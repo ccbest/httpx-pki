@@ -38,13 +38,11 @@ from ._material import (
     Password,
     _load_certificate,
     _load_certificates,
-    encode_password,
-    load_material,
     read_source,
-    resolve_chain,
 )
-from ._pkcs12 import IdentitySelector, material_from_store_export
+from ._pkcs12 import IdentitySelector
 from ._select import UsageSelector
+from ._source import bundle_ref, resolve_source, store_ref
 from ._winstore import Predicate
 
 # One source of server trust: ``True`` (the OS trust store, the default since
@@ -100,18 +98,21 @@ def build_ssl_context(  # pylint: disable=too-many-arguments
     that does not carry its own; ``prune_chain`` drops the ones that are not on
     its path, for a source whose chain you cannot edit.
     """
-    material = resolve_chain(
-        load_material(
-            read_source(source),
-            encode_password(password),
-            identity=identity,
-            key_usage=key_usage,
-            extended_key_usage=extended_key_usage,
+    return _context_from_material(
+        resolve_source(
+            bundle_ref(
+                "auto",
+                source,
+                password,
+                identity=identity,
+                key_usage=key_usage,
+                extended_key_usage=extended_key_usage,
+                chain=chain,
+                prune_chain=prune_chain,
+            )
         ),
-        chain,
-        prune=prune_chain,
+        verify,
     )
-    return _context_from_material(material, verify)
 
 
 def build_windows_ssl_context(  # pylint: disable=too-many-arguments
@@ -123,6 +124,7 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     extended_key_usage: UsageSelector | None = None,
     store: str = "MY",
     location: str = "CurrentUser",
+    prune_chain: bool = False,
     verify: VerifyTypes = True,
 ) -> ssl.SSLContext:
     """Build a client-certificate ``ssl.SSLContext`` from the Windows store.
@@ -136,7 +138,8 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
     must assert -- and returns the ``ssl.SSLContext`` presenting it, with
     server trust configured by *verify* exactly like httpx2 (``True``, the
     default, is the OS trust store; the literal ``"certifi"`` pins the certifi
-    bundle).
+    bundle). ``prune_chain`` drops the chain certificates the store exported
+    that are not on this certificate's path.
 
     Use it to mount a store certificate on a transport or a routing layer
     without building a whole :class:`~httpx_pki.PKIClient` just to read its
@@ -149,19 +152,21 @@ def build_windows_ssl_context(  # pylint: disable=too-many-arguments
         )
         transport = httpx.HTTPTransport(verify=ctx)
     """
-    from ._winstore import load_windows_pkcs12
-
-    pfx, password, chosen = load_windows_pkcs12(
-        name=name,
-        thumbprint=thumbprint,
-        identity=identity,
-        key_usage=key_usage,
-        extended_key_usage=extended_key_usage,
-        store=store,
-        location=location,
-    )
     return _context_from_material(
-        material_from_store_export(pfx, password, chosen), verify
+        resolve_source(
+            store_ref(
+                "winstore",
+                prune_chain=prune_chain,
+                name=name,
+                thumbprint=thumbprint,
+                identity=identity,
+                key_usage=key_usage,
+                extended_key_usage=extended_key_usage,
+                store=store,
+                location=location,
+            )
+        ),
+        verify,
     )
 
 
@@ -172,6 +177,7 @@ def build_macos_ssl_context(  # pylint: disable=too-many-arguments
     identity: str | MacPredicate | None = None,
     key_usage: UsageSelector | None = None,
     extended_key_usage: UsageSelector | None = None,
+    prune_chain: bool = False,
     verify: VerifyTypes = True,
 ) -> ssl.SSLContext:
     """Build a client-certificate ``ssl.SSLContext`` from the macOS keychain.
@@ -185,7 +191,9 @@ def build_macos_ssl_context(  # pylint: disable=too-many-arguments
     ``extended_key_usage`` it must assert -- and returns the
     ``ssl.SSLContext`` presenting it, with server trust configured by *verify*
     exactly like httpx2 (``True``, the default, is the OS trust store; the
-    literal ``"certifi"`` pins the certifi bundle).
+    literal ``"certifi"`` pins the certifi bundle). ``prune_chain`` drops the
+    chain certificates the keychain exported that are not on this
+    certificate's path.
 
     macOS only; see :meth:`~httpx_pki.PKIClient.from_macos_keychain` for the
     errors raised.
@@ -193,17 +201,19 @@ def build_macos_ssl_context(  # pylint: disable=too-many-arguments
         ctx = build_macos_ssl_context(name="ACME Client")
         transport = httpx.HTTPTransport(verify=ctx)
     """
-    from ._keychain import load_macos_pkcs12
-
-    pfx, password, chosen = load_macos_pkcs12(
-        name=name,
-        thumbprint=thumbprint,
-        identity=identity,
-        key_usage=key_usage,
-        extended_key_usage=extended_key_usage,
-    )
     return _context_from_material(
-        material_from_store_export(pfx, password, chosen), verify
+        resolve_source(
+            store_ref(
+                "macos_keychain",
+                prune_chain=prune_chain,
+                name=name,
+                thumbprint=thumbprint,
+                identity=identity,
+                key_usage=key_usage,
+                extended_key_usage=extended_key_usage,
+            )
+        ),
+        verify,
     )
 
 

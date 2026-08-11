@@ -12,11 +12,13 @@ import datetime
 import os
 import subprocess
 import sys
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 import pytest
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 
 import httpx_pki._winstore as winstore
 from httpx_pki import (
@@ -24,6 +26,7 @@ from httpx_pki import (
     CertificateLoadError,
     CertificateNotFoundError,
     PKIClient,
+    TLSConfigWarning,
     UnsupportedPlatformError,
     WinCert,
     build_windows_ssl_context,
@@ -38,7 +41,7 @@ from httpx_pki._winstore import (
     load_windows_pkcs12,
     select_windows_certificate,
 )
-from httpx_pki.testing import CertBundle, make_client_cert
+from httpx_pki.testing import CertBundle, make_ca, make_client_cert
 from tests.conftest import CLIENT_CN, Signed
 
 CANDIDATES = [
@@ -793,3 +796,31 @@ def test_records_are_hashable_and_compare_on_identity() -> None:
     )
     assert plain == DUAL[0]
     assert len({plain, DUAL[0]}) == 1
+
+
+def test_build_windows_ssl_context_prunes_the_exported_chain(
+    monkeypatch: pytest.MonkeyPatch, ca_bundle: CertBundle
+) -> None:
+    # A store that exports an unrelated root alongside the real chain: bytes
+    # the caller cannot edit, which is exactly what prune_chain= is for. The
+    # stray warning is the observable, since the context itself hands nothing
+    # back to inspect.
+    leaf = make_client_cert("svc", ca=ca_bundle)
+    messy = pkcs12.serialize_key_and_certificates(
+        b"svc",
+        leaf.key,
+        leaf.cert,
+        [ca_bundle.cert, make_ca("Unrelated Root").cert],
+        serialization.NoEncryption(),
+    )
+    fake = WinCert(subject_cn="svc", friendly_name=None, thumbprint="DEAD")
+    monkeypatch.setattr(winstore, "_enumerate_store", lambda store, location: [fake])
+    monkeypatch.setattr(winstore, "_export_pfx", lambda cert: (messy, b""))
+    monkeypatch.setattr(winstore.sys, "platform", "win32")
+
+    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
+        build_windows_ssl_context(name="svc")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
+        build_windows_ssl_context(name="svc", prune_chain=True)

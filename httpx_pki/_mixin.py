@@ -41,21 +41,18 @@ from ._material import (
     _load_certificate,
     cert_info,
     encode_password,
-    load_material,
-    normalize_pem,
-    parse_pem_bundle,
-    parse_pkcs12,
-    read_source,
-    resolve_chain,
 )
-from ._pkcs12 import IdentitySelector, material_from_store_export
+from ._pkcs12 import IdentitySelector
 from ._select import UsageSelector
 from ._source import (
     SourceRef,
     WatchSignature,
+    bundle_ref,
     is_reloadable,
+    key_pair_ref,
     resolve_source,
     stat_signature,
+    store_ref,
     watch_paths,
 )
 from ._ssl import VerifyTypes, _context_from_material, _load_client_cert
@@ -158,7 +155,7 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         """Forward to the concrete httpx base class. Overridden per client."""
         raise NotImplementedError
 
-    def __init__(  # pylint: disable=too-many-arguments,too-many-locals
+    def __init__(  # pylint: disable=too-many-arguments
         self,
         source: CertSource,
         password: Password = None,
@@ -174,31 +171,21 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         strict_validity: bool = False,
         **kwargs: Any,
     ) -> None:
-        encoded = encode_password(password)
-        selectors: dict[str, Any] = {
-            "identity": identity,
-            "key_usage": key_usage,
-            "extended_key_usage": extended_key_usage,
-        }
-        material = resolve_chain(
-            load_material(read_source(source), encoded, **selectors),
-            chain,
-            prune=prune_chain,
+        ref = bundle_ref(
+            "auto",
+            source,
+            password,
+            identity=identity,
+            key_usage=key_usage,
+            extended_key_usage=extended_key_usage,
+            chain=chain,
+            prune_chain=prune_chain,
         )
         self._apply_material(
-            material,
+            resolve_source(ref),
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef(
-                "auto",
-                {
-                    "source": source,
-                    **selectors,
-                    "chain": chain,
-                    "prune_chain": prune_chain,
-                },
-                encoded,
-            ),
+            source=ref,
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -341,6 +328,35 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         )
         return self
 
+    @classmethod
+    def _from_ref(
+        cls: type[_S],
+        ref: SourceRef,
+        *,
+        verify: VerifyTypes = True,
+        warn_if_expires_within: datetime.timedelta | None = None,
+        auto_reload: bool | datetime.timedelta = False,
+        strict_validity: bool = False,
+        **kwargs: Any,
+    ) -> _S:
+        """Load *ref* and build a client that records it for reloading.
+
+        The body of every alternate constructor except :meth:`from_env`, which
+        reads a ``verify`` policy out of the environment as well as material
+        and so cannot go through one call. Loading through
+        :func:`~httpx_pki._source.resolve_source` is what keeps a constructor
+        and :meth:`reload` reading the same source the same way.
+        """
+        return cls._from_material(
+            resolve_source(ref),
+            verify=verify,
+            warn_if_expires_within=warn_if_expires_within,
+            source=ref,
+            auto_reload=auto_reload,
+            strict_validity=strict_validity,
+            **kwargs,
+        )
+
     # -- alternate constructors (shared verbatim by the sync and async
     # clients; each returns the class it was called on) ----------------------
 
@@ -418,31 +434,19 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
         """
-        encoded = encode_password(password)
-        selectors: dict[str, Any] = {
-            "identity": identity,
-            "key_usage": key_usage,
-            "extended_key_usage": extended_key_usage,
-        }
-        material = resolve_chain(
-            parse_pkcs12(read_source(source), encoded, **selectors),
-            chain,
-            prune=prune_chain,
-        )
-        return cls._from_material(
-            material,
+        return cls._from_ref(
+            bundle_ref(
+                "pkcs12",
+                source,
+                password,
+                identity=identity,
+                key_usage=key_usage,
+                extended_key_usage=extended_key_usage,
+                chain=chain,
+                prune_chain=prune_chain,
+            ),
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef(
-                "pkcs12",
-                {
-                    "source": source,
-                    **selectors,
-                    "chain": chain,
-                    "prune_chain": prune_chain,
-                },
-                encoded,
-            ),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -477,31 +481,19 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
         """
-        encoded = encode_password(password)
-        selectors: dict[str, Any] = {
-            "identity": identity,
-            "key_usage": key_usage,
-            "extended_key_usage": extended_key_usage,
-        }
-        material = resolve_chain(
-            parse_pem_bundle(read_source(source), encoded, **selectors),
-            chain,
-            prune=prune_chain,
-        )
-        return cls._from_material(
-            material,
+        return cls._from_ref(
+            bundle_ref(
+                "pem",
+                source,
+                password,
+                identity=identity,
+                key_usage=key_usage,
+                extended_key_usage=extended_key_usage,
+                chain=chain,
+                prune_chain=prune_chain,
+            ),
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef(
-                "pem",
-                {
-                    "source": source,
-                    **selectors,
-                    "chain": chain,
-                    "prune_chain": prune_chain,
-                },
-                encoded,
-            ),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -533,25 +525,16 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         *warn_if_expires_within* warns about a certificate that expires inside
         that window (see :meth:`check_validity`).
         """
-        encoded = encode_password(password)
-        material = resolve_chain(
-            normalize_pem(certificate, private_key, password, chain),
-            prune=prune_chain,
-        )
-        return cls._from_material(
-            material,
+        return cls._from_ref(
+            key_pair_ref(
+                certificate,
+                private_key,
+                password,
+                chain=chain,
+                prune_chain=prune_chain,
+            ),
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef(
-                "key_pair",
-                {
-                    "certificate": certificate,
-                    "private_key": private_key,
-                    "chain": chain,
-                    "prune_chain": prune_chain,
-                },
-                encoded,
-            ),
             auto_reload=auto_reload,
             strict_validity=strict_validity,
             **kwargs,
@@ -600,26 +583,18 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         :class:`~httpx_pki.CertificateNotFoundError` if nothing matches, and
         :class:`~httpx_pki.AmbiguousCertificateError` if several do.
         """
-        from ._keychain import load_macos_pkcs12
-
-        selector: dict[str, Any] = {
-            "name": name,
-            "thumbprint": thumbprint,
-            "identity": identity,
-            "key_usage": key_usage,
-            "extended_key_usage": extended_key_usage,
-        }
-        pfx, password, chosen = load_macos_pkcs12(**selector)
-        return cls._from_material(
-            resolve_chain(
-                material_from_store_export(pfx, password, chosen),
-                prune=prune_chain,
+        return cls._from_ref(
+            store_ref(
+                "macos_keychain",
+                prune_chain=prune_chain,
+                name=name,
+                thumbprint=thumbprint,
+                identity=identity,
+                key_usage=key_usage,
+                extended_key_usage=extended_key_usage,
             ),
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef(
-                "macos_keychain", {**selector, "prune_chain": prune_chain}
-            ),
             strict_validity=strict_validity,
             **kwargs,
         )
@@ -667,26 +642,20 @@ class _PKIMixin:  # pylint: disable=too-many-instance-attributes
         :class:`~httpx_pki.CertificateNotFoundError` if nothing matches, and
         :class:`~httpx_pki.AmbiguousCertificateError` if several do.
         """
-        from ._winstore import load_windows_pkcs12
-
-        selector: dict[str, Any] = {
-            "name": name,
-            "thumbprint": thumbprint,
-            "identity": identity,
-            "key_usage": key_usage,
-            "extended_key_usage": extended_key_usage,
-            "store": store,
-            "location": location,
-        }
-        pfx, password, chosen = load_windows_pkcs12(**selector)
-        return cls._from_material(
-            resolve_chain(
-                material_from_store_export(pfx, password, chosen),
-                prune=prune_chain,
+        return cls._from_ref(
+            store_ref(
+                "winstore",
+                prune_chain=prune_chain,
+                name=name,
+                thumbprint=thumbprint,
+                identity=identity,
+                key_usage=key_usage,
+                extended_key_usage=extended_key_usage,
+                store=store,
+                location=location,
             ),
             verify=verify,
             warn_if_expires_within=warn_if_expires_within,
-            source=SourceRef("winstore", {**selector, "prune_chain": prune_chain}),
             strict_validity=strict_validity,
             **kwargs,
         )

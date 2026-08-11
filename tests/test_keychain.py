@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -26,6 +27,7 @@ from httpx_pki import (
     CertificateNotFoundError,
     MacCert,
     PKIClient,
+    TLSConfigWarning,
     UnsupportedPlatformError,
     build_macos_ssl_context,
     cert_info,
@@ -33,7 +35,7 @@ from httpx_pki import (
     select_macos_certificate,
 )
 from httpx_pki._keychain import load_macos_pkcs12
-from httpx_pki.testing import CertBundle, make_client_cert
+from httpx_pki.testing import CertBundle, make_ca, make_client_cert
 from tests.conftest import CLIENT_CN, P12_PASSWORD, Signed, _sign
 
 CANDIDATES = [
@@ -601,3 +603,29 @@ def test_records_are_hashable_and_compare_on_identity() -> None:
     )
     assert plain == DUAL[0]
     assert len({plain, DUAL[0]}) == 1
+
+
+def test_build_macos_ssl_context_prunes_the_exported_chain(
+    monkeypatch: pytest.MonkeyPatch, ca_bundle: CertBundle
+) -> None:
+    # As for the Windows store: the keychain export is not something the
+    # caller can edit, so prune_chain= is the only way to drop a stray.
+    leaf = make_client_cert("svc", ca=ca_bundle)
+    messy = pkcs12.serialize_key_and_certificates(
+        b"svc",
+        leaf.key,
+        leaf.cert,
+        [ca_bundle.cert, make_ca("Unrelated Root").cert],
+        serialization.NoEncryption(),
+    )
+    fake = MacCert(subject_cn="svc", label=None, thumbprint="DEAD")
+    monkeypatch.setattr(keychain, "_enumerate_identities", lambda: [fake])
+    monkeypatch.setattr(keychain, "_export_identity", lambda cert: (messy, b""))
+    monkeypatch.setattr(keychain.sys, "platform", "darwin")
+
+    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
+        build_macos_ssl_context(name="svc")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
+        build_macos_ssl_context(name="svc", prune_chain=True)

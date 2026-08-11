@@ -133,7 +133,8 @@ the git history for the fine print.
 - **New: `prune_chain=True` drops chain certificates that are not on the
   path** from the client certificate upward — the fix for the `chain.stray` and
   `chain.duplicate_leaf` findings, which previously could only be reported. It
-  is accepted by every constructor, `build_ssl_context()`, and `explain()`
+  is accepted by every constructor, `build_ssl_context()`,
+  `build_windows_ssl_context()`, `build_macos_ssl_context()`, and `explain()`
   (`--prune-chain` on the CLI), and survives `reload()` and pickling.
 
   The case it exists for is material you cannot edit: junk baked into a `.p12`

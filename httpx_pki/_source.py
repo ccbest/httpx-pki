@@ -19,8 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from ._material import (
+    CertSource,
     Material,
+    Password,
     chain_sources,
+    encode_password,
     load_material,
     normalize_pem,
     parse_pem_bundle,
@@ -28,7 +31,8 @@ from ._material import (
     read_source,
     resolve_chain,
 )
-from ._pkcs12 import material_from_store_export
+from ._pkcs12 import IdentitySelector, material_from_store_export
+from ._select import UsageSelector
 
 # One (mtime_ns, size) entry per watched path; None for a path that can't be
 # stat'ed (mid-rotation gap, deleted file). Any change in the tuple means the
@@ -50,6 +54,81 @@ class SourceRef:
     kind: str
     args: dict[str, Any]
     password: bytes | None = None
+
+
+# -- building refs ----------------------------------------------------------
+#
+# A ref is built by the constructor and then loaded by resolve_source() below,
+# which is also what reload() calls. That is the point of these factories: the
+# arguments of a construction path are written down once, and the material a
+# client is built with comes from the same code that will later rotate it, so
+# the two cannot drift.
+
+
+def bundle_ref(  # pylint: disable=too-many-arguments
+    kind: str,
+    source: CertSource,
+    password: Password = None,
+    *,
+    identity: IdentitySelector | None = None,
+    key_usage: UsageSelector | None = None,
+    extended_key_usage: UsageSelector | None = None,
+    chain: CertSource | list[CertSource] | None = None,
+    prune_chain: bool = False,
+) -> SourceRef:
+    """A ref for the single-source kinds: ``auto``, ``pkcs12``, and ``pem``.
+
+    They differ only in which parser reads the bytes -- content detection, or
+    one encoding named outright -- so they take the same arguments and record
+    the same *args*.
+    """
+    return SourceRef(
+        kind,
+        {
+            "source": source,
+            "identity": identity,
+            "key_usage": key_usage,
+            "extended_key_usage": extended_key_usage,
+            "chain": chain,
+            "prune_chain": prune_chain,
+        },
+        encode_password(password),
+    )
+
+
+def key_pair_ref(
+    certificate: CertSource,
+    private_key: CertSource,
+    password: Password = None,
+    *,
+    chain: CertSource | list[CertSource] | None = None,
+    prune_chain: bool = False,
+) -> SourceRef:
+    """A ref for a separate certificate and private key.
+
+    No identity selectors: naming the certificate *is* the selection.
+    """
+    return SourceRef(
+        "key_pair",
+        {
+            "certificate": certificate,
+            "private_key": private_key,
+            "chain": chain,
+            "prune_chain": prune_chain,
+        },
+        encode_password(password),
+    )
+
+
+def store_ref(kind: str, *, prune_chain: bool = False, **selector: Any) -> SourceRef:
+    """A ref for a platform store: ``winstore`` or ``macos_keychain``.
+
+    The *selector* is recorded verbatim and handed back to the store loader on
+    every reload (see :func:`_store_args`, which keeps ``prune_chain`` -- a
+    chain option, not a store one -- out of that call). No password is carried:
+    a store exports under an internally generated single-use one.
+    """
+    return SourceRef(kind, {**selector, "prune_chain": prune_chain})
 
 
 def _selectors(args: dict[str, Any]) -> dict[str, Any]:

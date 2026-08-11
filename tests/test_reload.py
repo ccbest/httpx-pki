@@ -162,8 +162,10 @@ def test_rotation_landing_mid_reload_is_not_lost(
             _rotate(cert_file, _pem(_sign(ca, "rot-c")))
         return material
 
-    monkeypatch.setattr(mixin, "resolve_source", racy_resolve)
+    # Patched only after construction: the constructor loads through the same
+    # resolve_source(), and the race under test is the one inside reload().
     with PKIClient(cert_file, auto_reload=datetime.timedelta(0)) as session:
+        monkeypatch.setattr(mixin, "resolve_source", racy_resolve)
         _rotate(cert_file, _pem(_sign(ca, "rot-b")))
         session._preflight()  # reloads rot-b; rot-c lands during the reload
         assert session.cn == "rot-b"
