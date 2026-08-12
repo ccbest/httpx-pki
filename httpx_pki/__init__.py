@@ -26,6 +26,7 @@ from ._keychain import (
 )
 from ._material import CertInfo, Material, cert_info
 from ._pkcs12 import P12Identity, list_identities, list_pkcs12_identities
+from ._scan import DirectoryScan, ScanIdentity, ScannedFile, scan
 from ._select import currently_valid, for_mtls
 from ._ssl import build_macos_ssl_context, build_ssl_context, build_windows_ssl_context
 from ._winstore import (
@@ -40,6 +41,10 @@ __all__ = [
     "HTTP_BACKEND",
     "build_ssl_context",
     "explain",
+    "scan",
+    "DirectoryScan",
+    "ScanIdentity",
+    "ScannedFile",
     "X509Explanation",
     "Problem",
     "ChainLink",
