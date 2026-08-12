@@ -488,6 +488,65 @@ def _load_private_key(
             ) from exc
 
 
+def _holds_private_key(data: bytes) -> bool:
+    """Whether *data* contains a private key, for diagnosis only.
+
+    A content probe, not a loader: an encrypted key it cannot decrypt still
+    counts, because the question is what the data *is*, not whether it can be
+    used. PEM is answered by block label; anything else by a DER parse.
+    """
+    if b"-----BEGIN" in data:
+        return any(
+            b"PRIVATE KEY" in match.group(1)
+            for match in _PEM_BLOCK.finditer(data)
+        )
+    try:
+        serialization.load_der_private_key(data, None)
+    except TypeError:
+        return True  # encrypted PKCS#8: unreadable without a password, but a key
+    except ValueError:
+        return False
+    return True
+
+
+def _holds_certificate(data: bytes) -> bool:
+    """Whether *data* contains a certificate, for diagnosis only.
+
+    The mirror of :func:`_holds_private_key`; together they tell a mis-seated
+    source apart from a broken one.
+    """
+    if b"-----BEGIN" in data:
+        return any(
+            match.group(1) == b"CERTIFICATE"
+            for match in _PEM_BLOCK.finditer(data)
+        )
+    try:
+        x509.load_der_x509_certificate(data)
+    except ValueError:
+        return False
+    return True
+
+
+def _mis_seated_hint(cert_data: bytes, key_data: bytes) -> str | None:
+    """A pointed message when the certificate seat holds a key, else ``None``.
+
+    Called only after the certificate source failed to parse. Handing the key
+    where the certificate goes -- with or without the certificate handed to
+    the key seat in exchange -- is the classic assembly mistake, and the error
+    should name it rather than report a parse failure on data that is
+    perfectly valid, just in the wrong seat. Data that is neither a key nor a
+    certificate gets no hint; the original error already describes it.
+    """
+    if not _holds_private_key(cert_data) or _holds_certificate(cert_data):
+        return None
+    if _holds_certificate(key_data) and not _holds_private_key(key_data):
+        return (
+            "the certificate source holds a private key and the private key "
+            "source holds a certificate (the two appear to be swapped)"
+        )
+    return "the certificate source holds a private key, not a certificate"
+
+
 def chain_sources(
     chain: CertSource | list[CertSource] | None,
 ) -> list[CertSource]:
@@ -580,9 +639,33 @@ def normalize_pem(
     *password* decrypts *private_key* only. An X.509 certificate is public data
     and is never encrypted in PEM, DER, or certs-only PKCS#7, so there is no
     corresponding certificate password anywhere in this path.
+
+    A source that fails to parse but clearly holds the *other* half -- the
+    private key seated as the certificate, or vice versa -- raises an error
+    naming the mix-up instead of a generic parse failure: the swap is the
+    caller's most likely mistake, and "could not parse" reads as a broken
+    file, which sends them looking in exactly the wrong place.
     """
-    certs = _load_certificates(read_source(certificate))
-    key = _load_private_key(read_source(private_key), encode_password(password))
+    cert_data = read_source(certificate)
+    key_data = read_source(private_key)
+    try:
+        certs = _load_certificates(cert_data)
+    except CertificateLoadError as exc:
+        hint = _mis_seated_hint(cert_data, key_data)
+        if hint is not None:
+            raise CertificateLoadError(hint) from exc
+        raise
+    try:
+        key = _load_private_key(key_data, encode_password(password))
+    except CertificateLoadError as exc:
+        # The swapped-pair case is caught above (the certificate side fails
+        # first); reaching here with a certificate in the key seat means the
+        # certificate was handed over twice.
+        if _holds_certificate(key_data) and not _holds_private_key(key_data):
+            raise CertificateLoadError(
+                "the private key source holds a certificate, not a private key"
+            ) from exc
+        raise
     if len(certs) == 1:
         leaf = certs[0]
         # A mismatched key and certificate -- common when a .pem is assembled

@@ -189,3 +189,70 @@ def test_single_source_garbage_still_generic() -> None:
 def test_pkcs12_wrong_password_still_generic(client_p12: bytes) -> None:
     with pytest.raises(CertificateLoadError, match="invalid PKCS#12"):
         PKIClient(client_p12, password="wrong")
+
+
+# -- from_key_pair with the sources mixed up ----------------------------------
+
+
+def test_key_pair_swapped_arguments_pointed_error(client: Signed) -> None:
+    # Both halves are valid, just in each other's seats: the error must say
+    # so, not report a parse failure that reads as a broken file.
+    with pytest.raises(CertificateLoadError, match="appear to be swapped"):
+        PKIClient.from_key_pair(
+            certificate=client.key_pem, private_key=client.cert_pem
+        )
+
+
+def test_key_pair_swapped_der_arguments_pointed_error(client: Signed) -> None:
+    # Content decides, not PEM armor: DER-encoded halves diagnose the same.
+    key_der = client.key.private_bytes(
+        serialization.Encoding.DER,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    cert_der = client.cert.public_bytes(serialization.Encoding.DER)
+    with pytest.raises(CertificateLoadError, match="appear to be swapped"):
+        PKIClient.from_key_pair(certificate=key_der, private_key=cert_der)
+
+
+def test_key_pair_swapped_encrypted_key_pointed_error(client: Signed) -> None:
+    # An encrypted key in the certificate seat is still recognizably a key
+    # (by its PEM label), so the swap is named even though nothing here could
+    # decrypt it.
+    encrypted_key = client.key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(b"keypw"),
+    )
+    with pytest.raises(CertificateLoadError, match="appear to be swapped"):
+        PKIClient.from_key_pair(
+            certificate=encrypted_key,
+            private_key=client.cert_pem,
+            password="keypw",
+        )
+
+
+def test_key_pair_key_in_both_seats_pointed_error(client: Signed) -> None:
+    with pytest.raises(
+        CertificateLoadError, match="holds a private key, not a certificate"
+    ):
+        PKIClient.from_key_pair(
+            certificate=client.key_pem, private_key=client.key_pem
+        )
+
+
+def test_key_pair_cert_in_both_seats_pointed_error(client: Signed) -> None:
+    with pytest.raises(
+        CertificateLoadError, match="holds a certificate, not a private key"
+    ):
+        PKIClient.from_key_pair(
+            certificate=client.cert_pem, private_key=client.cert_pem
+        )
+
+
+def test_key_pair_garbage_certificate_still_generic(client: Signed) -> None:
+    # The diagnosis must not misfire on data that is simply broken.
+    with pytest.raises(CertificateLoadError, match="could not parse certificate"):
+        PKIClient.from_key_pair(
+            certificate=b"not a certificate", private_key=client.key_pem
+        )

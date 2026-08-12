@@ -6,6 +6,15 @@ the git history for the fine print.
 
 ## Unreleased
 
+- **Improved: `from_key_pair` names a swapped certificate and private key.**
+  Handing the private key as `certificate=` (or vice versa) used to fail with
+  a generic "could not parse" error, which reads as a broken file. When a
+  source fails to parse but recognizably holds the other half, the error now
+  says which seat holds what — "the two appear to be swapped" for a full swap
+  — instead of sending you to inspect files that are perfectly valid. Applies 
+  everywhere a separate pair is accepted, including `from_env`'s 
+  `{prefix}CERT`/`{prefix}KEY`.
+
 - **New: `explain()`, `client.explain()`, and `python -m httpx_pki explain`.**
   The audit added in this release tells you something is wrong; this is what
   tells you what you are holding and what to do about it. It takes the same
