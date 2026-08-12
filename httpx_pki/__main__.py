@@ -3,7 +3,7 @@
 The entry points reachable by somebody who has been handed certificate files
 and has not written any code yet, which is exactly the audience the reports
 are for. Thin wrappers over :func:`~httpx_pki.explain` (one source: what it
-holds and what would stop it working) and :func:`~httpx_pki.scan` (a whole
+holds and what would stop it working) and :func:`~httpx_pki.inventory` (a whole
 directory: what each file is and which files pair up): everything they know
 comes from there, and this module adds only argument parsing, password
 prompts, and exit codes.
@@ -18,7 +18,7 @@ import sys
 
 from ._exceptions import PKIError
 from ._explain import explain
-from ._scan import scan
+from ._inventory import inventory
 from ._select import selector_from_string, usages_from_string
 
 
@@ -73,7 +73,7 @@ def _explain(args: argparse.Namespace) -> int:
     return 1 if report.problems else 0
 
 
-def _scan_passwords(args: argparse.Namespace) -> list[str]:
+def _inventory_passwords(args: argparse.Namespace) -> list[str]:
     """The passwords named by the repeated ``--password-env`` flags."""
     passwords = []
     for var in args.password_env:
@@ -84,10 +84,10 @@ def _scan_passwords(args: argparse.Namespace) -> list[str]:
     return passwords
 
 
-def _scan(args: argparse.Namespace) -> int:
-    passwords = _scan_passwords(args)
-    report = scan(args.directory, passwords=passwords or None)
-    # One prompt per locked file, skippable, then a single rescan: a password
+def _inventory(args: argparse.Namespace) -> int:
+    passwords = _inventory_passwords(args)
+    report = inventory(args.directory, passwords=passwords or None)
+    # One prompt per locked file, skippable, then a single re-read: a password
     # typed for one file is tried against all of them, since a folder's .p12
     # and its extracted key routinely share a passphrase.
     if report.locked and sys.stdin.isatty():
@@ -97,10 +97,10 @@ def _scan(args: argparse.Namespace) -> int:
             if value:
                 entered.append(value)
         if entered:
-            report = scan(args.directory, passwords=[*passwords, *entered])
+            report = inventory(args.directory, passwords=[*passwords, *entered])
     print(report)
     # Non-zero only when nothing here is loadable: locked and unpaired files
-    # are the normal lint of such a folder, not a failure of the scan.
+    # are the normal lint of such a folder, not a failure of the inventory.
     return 0 if report.usable else 1
 
 
@@ -174,17 +174,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     explain_parser.set_defaults(func=_explain)
 
-    scan_parser = sub.add_parser(
-        "scan",
+    inventory_parser = sub.add_parser(
+        "inventory",
         help="classify a directory of certificate files and pair its identities",
     )
-    scan_parser.add_argument(
+    inventory_parser.add_argument(
         "directory",
         nargs="?",
         default=".",
-        help="the directory to scan (top-level files only; default: here)",
+        help="the directory to inventory (top-level files only; default: here)",
     )
-    scan_parser.add_argument(
+    inventory_parser.add_argument(
         "--password-env",
         metavar="VAR",
         action="append",
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             "process listing. Files still locked are prompted for, one each"
         ),
     )
-    scan_parser.set_defaults(func=_scan)
+    inventory_parser.set_defaults(func=_inventory)
 
     args = parser.parse_args(argv)
     try:

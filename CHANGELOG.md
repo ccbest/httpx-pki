@@ -6,30 +6,39 @@ the git history for the fine print.
 
 ## Unreleased
 
-- **New: `scan()` and `python -m httpx_pki scan` — find the identities in a
-  directory of certificate exports.** The folder a CA hands over mixes
-  PKCS#12 bundles, extracted PEM halves, chain bundles, and issuance
-  artifacts, under extensions that promise nothing. `scan` classifies every
-  file by content, pairs private keys with certificates across files by
-  public key, and reports the constructor call each pairing amounts to —
-  the work otherwise done by opening files one at a time in an editor.
+- **New: `inventory()` and `python -m httpx_pki inventory` — find the
+  identities in a directory of certificate exports.** The folder a CA hands
+  over mixes PKCS#12 bundles, extracted PEM halves, chain bundles, and
+  issuance artifacts, under extensions that promise nothing. `inventory`
+  classifies every file by content, pairs private keys with certificates
+  across files by public key, and reports the constructor call each pairing
+  amounts to — the work otherwise done by opening files one at a time in an
+  editor. Where a file holds both halves it is named on its own, rather than
+  paired with a loose copy of the same key elsewhere in the folder.
 
   It takes several passwords, not one, because such folders span several;
   the report refers to them by position (`password #2`) and never repeats a
   value. A file no password opens is reported as `LOCKED` rather than
-  skipped — silence about a file is the failure mode this exists to remove.
-  Certificate-only files are `UNPAIRED`, annotated when they hold an
-  identity's issuer (an alternative `chain=`/`verify=` source); CSRs and
-  human-readable text dumps are labeled by which encoded file they describe,
-  via public-key and fingerprint matching. The same leaf reachable two ways
-  (a `.p12` and its extracted halves) is presented as one certificate with
-  two routes.
+  skipped — silence about a file is the failure mode this exists to remove —
+  and so is a file that opened in part and kept a key shut, the shape
+  `openssl pkcs12 -out client.pem` writes. Certificate-only files are
+  `UNPAIRED`, annotated when they hold an identity's issuer (an alternative
+  `chain=`/`verify=` source); CSRs and human-readable text dumps are labeled
+  by which encoded file they describe, via public-key and fingerprint
+  matching. The same leaf reachable two ways (a `.p12` and its extracted
+  halves) is presented as one certificate with two routes. Filenames are
+  treated as untrusted, like the names inside the certificates: control
+  characters are stripped from the report, and the suggested call quotes the
+  name as a Python literal.
 
-  Scan classifies and pairs; it does not audit — `explain()` is the next
+  Inventory classifies and pairs; it does not audit — `explain()` is the next
   step for a source it names — and it deliberately never *builds* a session:
   these folders routinely hold several identities and expired renewals, so
   choosing one silently is the mistake the report exists to prevent. Top
-  level only; subdirectories are counted, not descended into. The CLI
+  level only; subdirectories are counted, not descended into. A symlink to a
+  file is followed and named as it appears here — somebody linked it in on
+  purpose — while anything that is not a regular file (a device, a socket, a
+  link pointing nowhere) is named without being read. The CLI
   prompts once per still-locked file (skippable), takes repeatable
   `--password-env` (no `--password`, same reasoning as `explain`), and exits
   non-zero only when nothing loadable was found.

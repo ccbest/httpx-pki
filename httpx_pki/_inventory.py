@@ -1,20 +1,20 @@
 """Finding the usable identities in a directory of certificate exports.
 
-:func:`scan` is for the folder a CA hands over: a mix of PKCS#12 bundles,
+:func:`inventory` is for the folder a CA hands over: a mix of PKCS#12 bundles,
 extracted PEM halves, chain bundles, and issuance artifacts, under extensions
 that promise nothing. It classifies every file by content, pairs private keys
 with certificates across files (by public key, the way the loaders do), and
 reports the constructor call each pairing amounts to -- the work otherwise
 done by opening files one at a time in an editor.
 
-Scan classifies and pairs; it does not audit. Once it names a source,
+Inventory classifies and pairs; it does not audit. Once it names a source,
 :func:`~httpx_pki.explain` is the tool for what would stop that source
 working. And it never *builds* anything: a folder like this routinely holds
 several identities, expired renewals, and stray trust bundles, so choosing
 one silently is exactly the mistake the report exists to prevent.
 
-Every file the scan touches lands in the report -- as an identity's part, or
-as locked, unpaired, or a note. A file that a password fails to open is
+Every file the inventory reads lands in the report -- as an identity's part,
+or as locked, unpaired, or a note. A file that a password fails to open is
 reported as locked rather than skipped: silence about a file is the failure
 mode this module exists to remove.
 """
@@ -22,6 +22,7 @@ mode this module exists to remove.
 from __future__ import annotations
 
 import datetime
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -59,23 +60,42 @@ _CSR_LABELS = (b"CERTIFICATE REQUEST", b"NEW CERTIFICATE REQUEST")
 
 
 def _clean(text: str) -> str:
-    """Strip control characters from an untrusted certificate string.
+    """Strip control characters from an untrusted string.
 
     Same rule as the explain() report: names inside certificates are
-    attacker-controlled bytes that a terminal would otherwise act on.
+    attacker-controlled bytes that a terminal would otherwise act on. The
+    filenames here get the same treatment -- an unpacked export is no more
+    trustworthy than the certificates inside it, and a name carrying an
+    escape sequence would otherwise reach the terminal intact.
     """
     return "".join(ch for ch in text if ch.isprintable() or ch == " ")
 
 
+def _literal(name: str) -> str:
+    """A filename as a Python string literal, for a suggested call.
+
+    Not ``_clean``: the suggestion is meant to be pasted and run, so the name
+    has to survive whole. ``json.dumps`` escapes the quotes that would end
+    the literal early and the control characters a terminal would act on,
+    and its output is a valid Python literal for either.
+    """
+    return json.dumps(name)
+
+
 @dataclass(frozen=True)
-class ScannedFile:
-    """One file as the scan classified it.
+class InventoryEntry:
+    """One file as the inventory classified it.
 
     ``kind`` is a stable token (``"pkcs12"``, ``"pem"``, ``"certificates"``,
     ``"key"``, ``"csr"``, ``"dump"``, ``"locked"``, ``"unknown"``,
     ``"unreadable"``, ``"oversized"``); ``summary`` is the prose the report
     prints for it. ``password_index`` is the 1-based position of the password
     that opened the file, ``None`` when none was needed (or none worked).
+
+    ``"locked"`` is the kind of a file that gave up *nothing*; a file that
+    opened in part and kept a key shut keeps the kind of what it did give up
+    and appears under ``locked`` as well, since the shut key is the part
+    worth another password.
     """
 
     name: str
@@ -85,7 +105,7 @@ class ScannedFile:
 
 
 @dataclass(frozen=True)
-class ScanIdentity:  # pylint: disable=too-many-instance-attributes
+class InventoryIdentity:  # pylint: disable=too-many-instance-attributes
     """One presentable identity the directory holds, and how to load it.
 
     Exactly one of ``bundle_file`` (a self-contained source: a PKCS#12, or a
@@ -122,28 +142,30 @@ class ScanIdentity:  # pylint: disable=too-many-instance-attributes
             else ""
         )
         if self.bundle_file is not None:
-            rows.append(f"  bundle        {self.bundle_file}{opened}")
+            rows.append(f"  bundle        {_clean(self.bundle_file)}{opened}")
         else:
-            rows.append(f"  certificate   {self.certificate_file}")
+            rows.append(f"  certificate   {_clean(self.certificate_file or '')}")
             state = (
                 f" (encrypted — opened with password #{self.password_index})"
                 if self.password_index is not None
                 else " (encrypted)" if self.needs_password else ""
             )
-            rows.append(f"  private key   {self.key_file}{state}")
+            rows.append(f"  private key   {_clean(self.key_file or '')}{state}")
         if self.chain_file is not None:
-            rows.append(f"  chain         {self.chain_file}")
+            rows.append(f"  chain         {_clean(self.chain_file)}")
         if self.same_certificate_as is not None:
-            rows.append(f"  same certificate as {self.same_certificate_as}")
+            rows.append(
+                f"  same certificate as {_clean(self.same_certificate_as)}"
+            )
         rows.append(f"  → {self.suggestion}")
         return rows
 
 
 @dataclass(frozen=True)
-class DirectoryScan:
+class DirectoryInventory:
     """What a directory of certificate files holds, and how to use it.
 
-    Returned by :func:`~httpx_pki.scan`. ``print()`` it for the laid-out
+    Returned by :func:`~httpx_pki.inventory`. ``print()`` it for the laid-out
     report; ``repr()`` is the same report, for the same reason
     :class:`~httpx_pki.X509Explanation` reads in a REPL. ``files`` carries
     every file touched, whatever became of it; the other lists are the
@@ -151,10 +173,10 @@ class DirectoryScan:
     """
 
     directory: str
-    files: list[ScannedFile] = field(default_factory=list)
-    identities: list[ScanIdentity] = field(default_factory=list)
-    locked: list[ScannedFile] = field(default_factory=list)
-    unpaired: list[ScannedFile] = field(default_factory=list)
+    files: list[InventoryEntry] = field(default_factory=list)
+    identities: list[InventoryIdentity] = field(default_factory=list)
+    locked: list[InventoryEntry] = field(default_factory=list)
+    unpaired: list[InventoryEntry] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     skipped_subdirs: int = 0
 
@@ -173,7 +195,7 @@ class DirectoryScan:
         count = len(self.identities)
         found = "1 identity" if count == 1 else f"{count} identities"
         head = f"{_clean(self.directory)} — {_plural(len(self.files), 'file')}, {found}"
-        out = ["SCANNED".ljust(_WIDTH) + head, ""]
+        out = ["INVENTORY".ljust(_WIDTH) + head, ""]
         for identity in self.identities:
             out += _block("IDENTITY", identity.lines()) + [""]
         for label, rows in (
@@ -190,7 +212,8 @@ class DirectoryScan:
                 if self.skipped_subdirs == 1
                 else f"{self.skipped_subdirs} subdirectories"
             )
-            out += [f"{skipped} not scanned — point scan at them directly", ""]
+            out += [f"{skipped} not inventoried — point inventory() at them directly",
+                "",]
         while out and out[-1] == "":
             out.pop()
         return out
@@ -221,8 +244,20 @@ class _Facts:  # pylint: disable=too-many-instance-attributes
     p12_certs: list[x509.Certificate] = field(default_factory=list)
     csr_spkis: list[bytes] = field(default_factory=list)
     dump_prints: set[str] = field(default_factory=set)
+    # Keys that are certainly present and certainly shut: counted separately
+    # from ``keys`` because a file can hand over some of itself and still be
+    # holding a key back, and both halves of that have to reach the report.
+    locked_keys: int = 0
     locked_summary: str | None = None
     note: str | None = None
+
+
+def _locked_key_summary(name: str, count: int) -> str:
+    """The report line for keys a file is holding shut."""
+    return (
+        f"{_clean(name)} — {_plural(count, 'encrypted private key')}; "
+        f"none of the given passwords open {'it' if count == 1 else 'them'}"
+    )
 
 
 def _try_pem_key(
@@ -286,12 +321,10 @@ def _examine_pem(  # pylint: disable=too-many-branches
                     serialization.PublicFormat.SubjectPublicKeyInfo,
                 )
             )
+    facts.locked_keys = locked_keys
     if locked_keys and not facts.keys and not facts.certs:
         facts.kind = "locked"
-        facts.locked_summary = (
-            f"{facts.name} — encrypted private key; "
-            "none of the given passwords open it"
-        )
+        facts.locked_summary = _locked_key_summary(facts.name, locked_keys)
     else:
         facts.kind = "pem"
     return facts
@@ -314,7 +347,8 @@ def _examine_pkcs12(facts: _Facts, data: bytes, passwords: list[bytes]) -> _Fact
         return facts
     facts.kind = "locked"
     facts.locked_summary = (
-        f"{facts.name} — encrypted PKCS#12; none of the given passwords open it"
+        f"{_clean(facts.name)} — encrypted PKCS#12; "
+        "none of the given passwords open it"
     )
     return facts
 
@@ -347,10 +381,8 @@ def _examine_binary(  # pylint: disable=too-many-return-statements
             facts.kind = "key"
             return facts
         facts.kind = "locked"
-        facts.locked_summary = (
-            f"{facts.name} — encrypted private key; "
-            "none of the given passwords open it"
-        )
+        facts.locked_keys = 1
+        facts.locked_summary = _locked_key_summary(facts.name, 1)
         return facts
     except ValueError:
         pass
@@ -369,7 +401,7 @@ def _examine_binary(  # pylint: disable=too-many-return-statements
         return attempted
     facts.kind = "unknown"
     facts.locked_summary = None
-    facts.note = f"{facts.name} — not recognizable certificate material"
+    facts.note = f"{_clean(facts.name)} — not recognizable certificate material"
     return facts
 
 
@@ -405,11 +437,23 @@ def _examine(name: str, data: bytes, passwords: list[bytes]) -> _Facts:
         return _examine_dump(facts, data)
     if stripped[:1] == b"\x30":
         return _examine_binary(facts, data, passwords)
-    facts.note = f"{name} — not recognizable certificate material"
+    facts.note = f"{_clean(name)} — not recognizable certificate material"
     return facts
 
 
 # -- cross-file assembly -----------------------------------------------------
+
+
+def _holds(facts: _Facts, spki: bytes) -> bool | None:
+    """Whether *facts* holds the private key for *spki*, and encrypted.
+
+    ``None`` when the file does not hold it at all -- distinct from ``False``,
+    which means it holds it and no password was needed.
+    """
+    for candidate, encrypted in facts.keys:
+        if candidate == spki:
+            return encrypted
+    return None
 
 
 def _issuer_in(leaf: x509.Certificate, certs: list[x509.Certificate]) -> bool:
@@ -454,10 +498,11 @@ def _file_summary(facts: _Facts) -> str:
     """One line saying what the file turned out to be."""
     if facts.locked_summary is not None:
         return facts.locked_summary
+    name = _clean(facts.name)
     if facts.kind == "pkcs12":
         count = len(facts.p12_identities)
         inside = "1 identity" if count == 1 else f"{count} identities"
-        return f"{facts.name} — PKCS#12, {inside}"
+        return f"{name} — PKCS#12, {inside}"
     if facts.kind in ("pem", "certificates", "key"):
         parts = []
         if facts.keys:
@@ -466,10 +511,18 @@ def _file_summary(facts: _Facts) -> str:
             parts.append(_plural(len(facts.certs), "certificate"))
         if facts.csr_spkis:
             parts.append(_plural(len(facts.csr_spkis), "certificate request"))
-        return f"{facts.name} — {', '.join(parts) or 'no recognizable blocks'}"
+        summary = f"{name} — {', '.join(parts) or 'no recognizable blocks'}"
+        if facts.locked_keys:
+            # The file gave up part of itself and kept a key shut. Saying only
+            # what opened would leave the interesting half unmentioned.
+            summary += (
+                f", plus {_plural(facts.locked_keys, 'encrypted private key')} "
+                "none of the given passwords open"
+            )
+        return summary
     if facts.kind == "dump":
-        return f"{facts.name} — human-readable certificate dump"
-    return facts.note or facts.name
+        return f"{name} — human-readable certificate dump"
+    return facts.note or name
 
 
 def _normalize_passwords(
@@ -487,10 +540,10 @@ def _normalize_passwords(
     return encoded
 
 
-def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
+def inventory(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     directory: str | Path,
     passwords: Password | Sequence[Password] | None = None,
-) -> DirectoryScan:
+) -> DirectoryInventory:
     """Classify every file in *directory* and pair the identities it holds.
 
     *passwords* is one password or several: a folder accumulated over time is
@@ -502,6 +555,12 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
     Top-level files only. Subdirectories are counted and named as skipped
     rather than descended into -- a CA export is flat, and whatever else a
     subtree holds, crawling it uninvited is not this function's call.
+
+    A symlink to a file is followed and inventoried under the name it wears
+    here: somebody linked it into this folder deliberately, and from where
+    they are standing the certificate *is* in this folder. Anything that is
+    not a regular file -- a device, a socket, a link pointing nowhere -- is
+    named without being read.
     """
     root = Path(directory)
     if not root.is_dir():
@@ -509,36 +568,49 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
     encoded = _normalize_passwords(passwords)
 
     all_facts: list[_Facts] = []
-    files: list[ScannedFile] = []
+    files: list[InventoryEntry] = []
     notes: list[str] = []
     skipped_subdirs = 0
     for path in sorted(root.iterdir()):
         if path.is_dir():
             skipped_subdirs += 1
             continue
-        if not path.is_file():
-            continue
         name = path.name
+        shown = _clean(name)
+        if not path.is_file():
+            # Reading these is what must not happen: a FIFO blocks the read
+            # forever, a character device never ends it (and reports a size
+            # of zero, so the ceiling below would not stop it), and a link
+            # pointing nowhere has nothing behind it. Naming them is the
+            # whole of the job -- an entry that disappears from the report
+            # reads as a bug in the tool, and a broken link where a bundle
+            # should be is exactly what somebody is hunting for.
+            what = "broken symlink" if path.is_symlink() else "not a regular file"
+            files.append(InventoryEntry(name, "unreadable", f"{shown} — {what}"))
+            notes.append(f"{shown} — {what}; not read")
+            continue
         try:
             size = path.stat().st_size
             if size > _MAX_FILE_SIZE:
                 files.append(
-                    ScannedFile(name, "oversized", f"{name} — too large to scan")
+                    InventoryEntry(
+                        name, "oversized", f"{shown} — too large to inventory"
+                    )
                 )
                 notes.append(
-                    f"{name} — {size // (1024 * 1024)} MiB, too large to be "
-                    "certificate material; not scanned"
+                    f"{shown} — {size // (1024 * 1024)} MiB, too large to be "
+                    "certificate material; not inventoried"
                 )
                 continue
             data = path.read_bytes()
         except OSError as exc:
-            files.append(ScannedFile(name, "unreadable", f"{name} — {exc}"))
-            notes.append(f"{name} — could not be read ({exc})")
+            files.append(InventoryEntry(name, "unreadable", f"{shown} — {exc}"))
+            notes.append(f"{shown} — could not be read ({exc})")
             continue
         all_facts.append(_examine(name, data, encoded))
 
     # -- assemble identities ---------------------------------------------
-    identities: list[ScanIdentity] = []
+    identities: list[InventoryIdentity] = []
     seen_leaves: dict[bytes, str] = {}  # leaf DER -> file first offering it
     spki_to_source: dict[bytes, str] = {}  # identity SPKI -> file, for CSR notes
     cert_only = [
@@ -563,19 +635,19 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
         needs_password = facts.password_index is not None
         for loaded in facts.p12_identities:
             cert = loaded.identity.certificate
-            args = [f'"{facts.name}"']
+            args = [_literal(facts.name)]
             if needs_password:
                 args.append("password=...")
             if several:
                 args.append("identity=httpx_pki.for_mtls")
             chain_file = _chain_file_for(cert, facts.p12_certs, cert_only)
             if chain_file is not None:
-                args.append(f'chain="{chain_file}"')
+                args.append(f"chain={_literal(chain_file)}")
                 used_as_chain.add(chain_file)
             spki_to_source.setdefault(_spki(cert.public_key()), facts.name)
             leaves.append((cert, facts.name))
             identities.append(
-                ScanIdentity(
+                InventoryIdentity(
                     info=loaded.identity.info,
                     key_label=_key_description(cert),
                     bundle_file=facts.name,
@@ -596,9 +668,13 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
             keys.setdefault(spki, (facts, encrypted))
 
     matched_keys: set[bytes] = set()
-    for spki, (key_facts, encrypted) in keys.items():
+    for spki, fallback in keys.items():
         seen_certs: set[bytes] = set()
-        for cert_facts in all_facts:
+        # Files holding this key first, so that when the same certificate
+        # sits in two places the self-contained copy is the one reported.
+        ordered = [f for f in all_facts if _holds(f, spki) is not None]
+        ordered += [f for f in all_facts if _holds(f, spki) is None]
+        for cert_facts in ordered:
             for cert in cert_facts.certs:
                 if _spki(cert.public_key()) != spki:
                     continue
@@ -609,33 +685,42 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
                 matched_keys.add(spki)
                 spki_to_source.setdefault(spki, cert_facts.name)
                 leaves.append((cert, cert_facts.name))
-                password_arg = (
-                    ", password=..." if encrypted else ""
+                # The key in the certificate's own file wins over a copy of
+                # it elsewhere: that file loads on its own, and naming the
+                # stray copy would suggest pairing two files that need no
+                # pairing at all.
+                own = _holds(cert_facts, spki)
+                key_facts, encrypted = (
+                    (cert_facts, own) if own is not None else fallback
                 )
+                password_arg = ", password=..." if encrypted else ""
                 chain_file = _chain_file_for(cert, cert_facts.certs, cert_only)
                 chain_arg = (
-                    f', chain="{chain_file}"' if chain_file is not None else ""
+                    f", chain={_literal(chain_file)}"
+                    if chain_file is not None
+                    else ""
                 )
                 if chain_file is not None:
                     used_as_chain.add(chain_file)
                 if cert_facts is key_facts:
                     suggestion = (
-                        f'PKIClient("{key_facts.name}"{password_arg}{chain_arg})'
+                        f"PKIClient({_literal(key_facts.name)}"
+                        f"{password_arg}{chain_arg})"
                     )
                     certificate_file = None
                     key_file = None
                     bundle_file: str | None = key_facts.name
                 else:
                     suggestion = (
-                        f'from_key_pair(certificate="{cert_facts.name}", '
-                        f'private_key="{key_facts.name}"'
+                        f"from_key_pair(certificate={_literal(cert_facts.name)}, "
+                        f"private_key={_literal(key_facts.name)}"
                         f"{password_arg}{chain_arg})"
                     )
                     certificate_file = cert_facts.name
                     key_file = key_facts.name
                     bundle_file = None
                 identities.append(
-                    ScanIdentity(
+                    InventoryIdentity(
                         info=certificate_info(cert),
                         key_label=_key_description(cert),
                         bundle_file=bundle_file,
@@ -647,15 +732,15 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
                         ),
                         needs_password=encrypted,
                         same_certificate_as=leaf_note(
-                            cert, bundle_file or f"{certificate_file}"
+                            cert, bundle_file or cert_facts.name
                         ),
                         suggestion=suggestion,
                     )
                 )
 
     # -- the files nothing claimed -----------------------------------------
-    locked: list[ScannedFile] = []
-    unpaired: list[ScannedFile] = []
+    locked: list[InventoryEntry] = []
+    unpaired: list[InventoryEntry] = []
     identity_files: set[str] = set()
     for identity in identities:
         identity_files.update(
@@ -669,19 +754,27 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
         )
 
     for facts in all_facts:
-        entry = ScannedFile(
+        entry = InventoryEntry(
             facts.name, facts.kind, _file_summary(facts), facts.password_index
         )
         files.append(entry)
+        shown = _clean(facts.name)
         if facts.kind == "locked":
+            locked.append(entry)
+            continue
+        if facts.locked_keys:
+            # Part of the file opened, part of it did not. It belongs in
+            # LOCKED all the same -- so the CLI offers a prompt for it, and
+            # so the unpaired verdict below does not call its certificate
+            # orphaned when the key is sitting right there, shut.
             locked.append(entry)
             continue
         if facts.kind == "dump":
             described = _dump_subject(facts, all_facts)
             notes.append(
-                f"{facts.name} — human-readable dump"
+                f"{shown} — human-readable dump"
                 + (
-                    f"; fingerprint matches {described}"
+                    f"; fingerprint matches {_clean(described)}"
                     if described
                     else "; matches nothing here"
                 )
@@ -696,17 +789,17 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
             for spki in facts.csr_spkis:
                 owner = spki_to_source.get(spki)
                 what = (
-                    f"for the key of {owner}"
+                    f"for the key of {_clean(owner)}"
                     if owner
                     else "matching nothing here"
                 )
                 notes.append(
-                    f"{facts.name} — certificate request {what} "
+                    f"{shown} — certificate request {what} "
                     "(issuance artifact, not loadable)"
                 )
             continue
         if facts.kind == "pem" and not (facts.certs or facts.keys):
-            notes.append(f"{facts.name} — PEM armor with no recognizable blocks")
+            notes.append(f"{shown} — PEM armor with no recognizable blocks")
             continue
         if facts.name in identity_files or facts.kind == "pkcs12":
             continue
@@ -726,34 +819,43 @@ def scan(  # pylint: disable=too-many-locals,too-many-branches,too-many-statemen
             )
             if issuer_of is not None:
                 suffix = (
-                    f" (holds the issuer of {issuer_of} — usable as chain= "
-                    "or verify=)"
+                    f" (holds the issuer of {_clean(issuer_of)} — usable as "
+                    "chain= or verify=)"
                 )
             elif _all_ca(facts.certs):
                 suffix = " (all CA certificates — possibly a verify= trust bundle)"
             else:
                 suffix = ""
             unpaired.append(
-                ScannedFile(
+                InventoryEntry(
                     facts.name,
                     facts.kind,
-                    f"{facts.name} — {_plural(len(facts.certs), 'certificate')} "
+                    f"{shown} — {_plural(len(facts.certs), 'certificate')} "
                     f"with no matching key here{suffix}",
                     facts.password_index,
                 )
             )
         elif facts.keys and not any(s in matched_keys for s, _ in facts.keys):
             unpaired.append(
-                ScannedFile(
+                InventoryEntry(
                     facts.name,
                     facts.kind,
-                    f"{facts.name} — private key with no matching certificate "
-                    "here",
+                    f"{shown} — private key with no matching certificate here",
                     facts.password_index,
                 )
             )
+        elif facts.keys:
+            # Spoken for, but by another file that keeps the same key next to
+            # its certificate. A spare copy is worth naming rather than
+            # passing over in silence.
+            owner = next(
+                (spki_to_source[s] for s, _ in facts.keys if s in spki_to_source),
+                None,
+            )
+            where = f", already paired in {_clean(owner)}" if owner else ""
+            notes.append(f"{shown} — a second copy of a private key{where}")
 
-    return DirectoryScan(
+    return DirectoryInventory(
         directory=str(directory),
         files=files,
         identities=identities,
