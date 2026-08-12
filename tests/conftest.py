@@ -8,6 +8,7 @@ import http.server
 import ipaddress
 import socket
 import ssl
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -380,7 +381,23 @@ def mtls_server(
         def log_message(self, *args: object) -> None:
             pass
 
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    class Server(http.server.HTTPServer):
+        def handle_error(self, request: object, client_address: object) -> None:
+            # A client that completes the TLS handshake and then walks away
+            # without sending a request is expected traffic here, not a fault:
+            # test_default_trust_rejects_private_ca_server connects with the OS
+            # trust store, and on Windows and macOS truststore verifies the
+            # chain *after* the handshake (it hands OpenSSL CERT_NONE and calls
+            # the platform verifier itself), so this server has already accepted
+            # a connection and started reading a request line by the time the
+            # client rejects our throwaway CA and closes. Windows turns that
+            # abrupt close into ConnectionResetError where other platforms just
+            # see EOF, which is why only Windows logged a traceback for it.
+            # Every other handler error stays loud.
+            if not isinstance(sys.exc_info()[1], ConnectionError):
+                super().handle_error(request, client_address)
+
+    server = Server(("127.0.0.1", 0), Handler)
     server.socket = ctx.wrap_socket(server.socket, server_side=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
