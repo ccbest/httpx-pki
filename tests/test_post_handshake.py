@@ -44,6 +44,10 @@ def test_server_can_ask_after_the_handshake(
     # The handshake finished with no certificate -- that is what makes this
     # post-handshake auth rather than ordinary mTLS.
     assert not seen["before"]
+    # Report the whole exchange rather than raising KeyError: which side gave
+    # up, and whether it gave up at all, is the entire diagnosis when this
+    # fails on one platform and not another.
+    assert "after" in seen, f"the server was never answered: {seen}"
     assert _peer_cn(seen["after"]) == CLIENT_CN
 
 

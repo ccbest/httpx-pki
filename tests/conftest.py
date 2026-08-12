@@ -214,6 +214,15 @@ def server_cert(ca: Signed) -> Signed:
     return _sign(ca, "localhost", sans)
 
 
+# Backstops for the post-handshake exchange, not tuning knobs. TLS fixes the
+# order of the messages but not how many application-data rounds a client takes
+# to answer a CertificateRequest, so neither side may assume one round is
+# enough; PHA_ROUNDS bounds the wait in rounds and PHA_TIMEOUT in seconds, so a
+# peer that never answers fails the test rather than hanging the suite.
+PHA_ROUNDS = 3
+PHA_TIMEOUT = 10.0
+
+
 @dataclass
 class PHAServer:
     """A TLS 1.3 server that asks for the client certificate *after* the
@@ -221,14 +230,15 @@ class PHAServer:
 
     Not an HTTP server: the exchange under test is the TLS one, and httpx
     contributes nothing to it beyond handing the ``ssl.SSLContext`` down to
-    the socket. Speaking the three messages directly keeps the test off
-    keep-alive timing, which is what decides whether the server gets a second
-    read to process the client's certificate on.
+    the socket. Speaking the messages directly keeps the test off keep-alive
+    timing, which is what decides whether the server gets a second read to
+    process the client's certificate on.
 
     ``exchange()`` runs one connection to completion and reports what the
     server saw: ``before`` and ``after`` are the peer certificate as of the
-    end of the handshake and after the post-handshake request, and ``error``
-    is set instead when the server could not ask at all.
+    end of the handshake and after the post-handshake request, ``error`` is
+    set instead when the server could not ask or was never answered, and
+    ``client_error`` records the client losing the connection mid-exchange.
     """
 
     host: str
@@ -240,17 +250,41 @@ class PHAServer:
         seen: dict[str, object] = {}
 
         def serve(listener: socket.socket) -> None:
-            conn, _ = listener.accept()
             try:
+                conn, _ = listener.accept()
+                conn.settimeout(PHA_TIMEOUT)
                 with self._context.wrap_socket(conn, server_side=True) as tls:
                     tls.recv(4096)  # the client's opening bytes
                     seen["before"] = tls.getpeercert()
-                    # Ask now. The request rides out with the next write, and
-                    # the client's certificate arrives on the read after that.
+                    # Ask now. The request rides out with the next write and
+                    # the certificate comes back on a later read -- but *how
+                    # many* reads later is the client's business. RFC 8446
+                    # section 4.6.2 orders the messages, not the rounds: the
+                    # answer precedes any further application data, and that
+                    # is the whole guarantee. So read until the post-handshake
+                    # handshake has actually finished instead of assuming the
+                    # first read finishes it, and ask again each round so the
+                    # client always has something to reply to.
                     tls.verify_client_post_handshake()
-                    tls.sendall(b"ASK")
-                    tls.recv(4096)
-                    seen["after"] = tls.getpeercert()
+                    for _ in range(PHA_ROUNDS):
+                        tls.sendall(b"ASK")
+                        data = tls.recv(4096)
+                        try:
+                            seen["after"] = tls.getpeercert()
+                            break
+                        except ValueError:
+                            # "handshake not done yet" -- the client has not
+                            # answered on this round. That is a state a real
+                            # server sits in too, so the loop absorbs it
+                            # rather than letting it escape the thread.
+                            pass
+                        if not data:
+                            seen["error"] = "client closed without answering"
+                            break
+                    else:
+                        seen["error"] = (
+                            f"unanswered after {PHA_ROUNDS} post-handshake rounds"
+                        )
             except (ssl.SSLError, OSError) as exc:
                 seen["error"] = f"{type(exc).__name__}: {exc}"
 
@@ -259,21 +293,32 @@ class PHAServer:
             thread = threading.Thread(target=serve, args=(listener,), daemon=True)
             thread.start()
             try:
-                with socket.create_connection((self.host, port)) as sock:
+                with socket.create_connection(
+                    (self.host, port), timeout=PHA_TIMEOUT
+                ) as sock:
                     with client_context.wrap_socket(
                         sock, server_hostname="localhost"
                     ) as tls:
                         tls.sendall(b"HELLO")
                         try:
-                            tls.recv(4096)
-                            tls.sendall(b"DONE")
+                            # Stay in the conversation for as many rounds as
+                            # the server runs. A client that hangs up after
+                            # one reply takes with it the read the server's
+                            # next CertificateRequest would have landed on,
+                            # which is indistinguishable from a client that
+                            # refused to answer. The loop ends on the server's
+                            # close, so the normal case is still one round.
+                            for _ in range(PHA_ROUNDS):
+                                if not tls.recv(4096):
+                                    break
+                                tls.sendall(b"DONE")
                         except OSError as exc:
                             # The server hung up mid-exchange -- which is the
                             # symptom under test, so record it and let the
                             # assertions read `seen`.
                             seen["client_error"] = type(exc).__name__
             finally:
-                thread.join(timeout=10)
+                thread.join(timeout=PHA_TIMEOUT)
         return seen
 
 
