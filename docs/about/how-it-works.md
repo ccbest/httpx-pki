@@ -68,7 +68,8 @@ For anyone reading the source:
 | `_ssl` | Building the `ssl.SSLContext`, staging, and `verify=` |
 | `_audit` | Finding trust anchors and chain certificates that cannot do their job |
 | `_explain` | Laying that out as a report — `explain()` and `client.explain()` |
-| `__main__` | `python -m httpx_pki explain` |
+| `_inventory` | Classifying a directory of files and pairing them — `inventory()` |
+| `__main__` | `python -m httpx_pki explain` and `inventory` |
 | `_mixin` | Everything the client classes share: constructors, reload, validity |
 | `_client` | The two public classes, binding the mixin to its httpx base |
 | `_winstore` / `_keychain` | The OS certificate stores |

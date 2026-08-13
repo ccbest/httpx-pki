@@ -256,6 +256,10 @@ For a file you have not written any code for yet:
 $ python -m httpx_pki explain corp.p12
 ```
 
+(For a whole *folder* you have not written any code for yet, the command is
+[`inventory`](taking-inventory.md) — it names the files, and `explain` takes it
+from there.)
+
 It takes the same selectors the library does, so a bundle holding several
 identities can be listed and then inspected:
 
@@ -314,6 +318,8 @@ To make expiry a hard failure on every request instead, use
 
 ## Next steps
 
+- [](taking-inventory.md) — the step before this one, when what you have is a
+  folder rather than a file
 - [](choosing-a-certificate.md) — inspecting a file that holds several
   identities
 - [](expiry-and-rotation.md) — acting on what you find as certificates age

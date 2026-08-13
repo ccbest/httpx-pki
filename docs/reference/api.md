@@ -62,6 +62,31 @@ Inspect what a source holds before mounting anything — see
 
 ## Inspection
 
+Two rungs of the same ladder. `inventory()` takes a *directory* and says what
+each file is and which files pair into a loadable identity; `explain()` takes
+one *source* the inventory named and says what would stop it working. Neither
+builds a client.
+
+`inventory()` reads a folder of exports — see [](../guide/taking-inventory.md).
+
+```{eval-rst}
+.. autofunction:: httpx_pki.inventory
+```
+
+```{eval-rst}
+.. autoclass:: httpx_pki.DirectoryInventory
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: httpx_pki.InventoryIdentity
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: httpx_pki.InventoryEntry
+```
+
 `explain()` describes a whole configuration — what a source holds, what it
 would present, what it would trust, and what would stop it working. See
 [](../guide/inspecting-a-certificate.md#explaining-a-whole-configuration).

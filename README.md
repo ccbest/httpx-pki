@@ -82,6 +82,43 @@ PKIClient.from_env()
 
 → [Loading certificates](https://httpx-pki.readthedocs.io/en/stable/guide/loading-certificates.html)
 
+## Handed a whole folder?
+
+A CA rarely sends one file. `inventory` reads the folder, says what each file
+actually is, pairs the keys with their certificates, and prints the call each
+pairing amounts to:
+
+```console
+$ python -m httpx_pki inventory ./corp-export
+```
+
+```text
+INVENTORY  corp-export — 7 files, 2 identities
+
+IDENTITY   svc-client   RSA-2048   expires 2027-01-15
+             bundle        corp.p12 (password #1)
+             chain         corp-issuing-ca.crt
+             → PKIClient("corp.p12", password=..., chain="corp-issuing-ca.crt")
+
+IDENTITY   svc-client   RSA-2048   expires 2027-01-15
+             certificate   svc-client.pem
+             private key   svc-client.key (encrypted — opened with password #2)
+             chain         corp-issuing-ca.crt
+             same certificate as corp.p12
+             → from_key_pair(certificate="svc-client.pem", private_key="svc-client.key", password=..., chain="corp-issuing-ca.crt")
+
+LOCKED     old-2025.pem — 1 certificate, plus 1 encrypted private key none of the given passwords open
+
+NOTES      cert-details.txt — human-readable dump; fingerprint matches corp.p12 (not loadable)
+           svc-client.csr — certificate request for the key of corp.p12 (issuance artifact, not loadable)
+```
+
+Nothing is skipped: a file no password opens is reported as locked, not
+dropped. It classifies and pairs — it never builds a session for you, because a
+folder like that usually holds more than one answer.
+
+→ [Taking inventory of a folder](https://httpx-pki.readthedocs.io/en/stable/guide/taking-inventory.html)
+
 ## Async
 
 ```python

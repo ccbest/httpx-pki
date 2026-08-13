@@ -55,7 +55,9 @@ policy. Beyond that, revocation is out of scope. See
 ## Fetching anything over the network
 
 httpx-pki never makes a request of its own. Reading a certificate does not
-cause one, and neither does [`explain()`](../guide/inspecting-a-certificate.md).
+cause one, and neither does [`explain()`](../guide/inspecting-a-certificate.md)
+or [`inventory()`](../guide/taking-inventory.md) — the latter reads the one
+directory you name, top level only, and nothing else.
 
 This is a security boundary, not an omission. When a chain is incomplete,
 `explain()` reports the URL the certificate names for its issuer — its

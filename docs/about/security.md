@@ -57,6 +57,11 @@ That is a deliberate trade, not an oversight. If it is not one you want, reload
 manually and pass the password each time. See
 [](../guide/expiry-and-rotation.md#passwords-and-unattended-reloads).
 
+Reports never carry a password value either.
+[`inventory()`](../guide/taking-inventory.md) takes several passwords and
+refers to them by position — `password #2` — precisely because its output is
+meant to be pasted into a ticket or a CI log.
+
 ## `SSLKEYLOGFILE` decrypts your traffic
 
 Contexts httpx-pki builds honor the standard `SSLKEYLOGFILE` variable, writing
