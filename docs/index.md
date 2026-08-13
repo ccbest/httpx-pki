@@ -74,6 +74,7 @@ troubleshooting
 
 guide/index
 guide/backends
+guide/taking-inventory
 guide/loading-certificates
 guide/choosing-a-certificate
 guide/inspecting-a-certificate

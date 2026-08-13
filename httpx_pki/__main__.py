@@ -1,13 +1,12 @@
 """``python -m httpx_pki`` -- inspect a certificate source from a shell.
 
-The one entry point reachable by somebody who has been handed a ``.p12`` and
-has not written any code yet, which is exactly the audience the report is for.
-A thin wrapper over :func:`~httpx_pki.explain`: everything it knows comes from
-there, and it adds only argument parsing, a password prompt, and an exit code.
-
-A subcommand from the start, with only one to offer, so that adding another
-later (inspecting a *server's* chain, say) does not change how this one is
-spelled.
+The entry points reachable by somebody who has been handed certificate files
+and has not written any code yet, which is exactly the audience the reports
+are for. Thin wrappers over :func:`~httpx_pki.explain` (one source: what it
+holds and what would stop it working) and :func:`~httpx_pki.inventory` (a whole
+directory: what each file is and which files pair up): everything they know
+comes from there, and this module adds only argument parsing, password
+prompts, and exit codes.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import sys
 
 from ._exceptions import PKIError
 from ._explain import explain
+from ._inventory import inventory
 from ._select import selector_from_string, usages_from_string
 
 
@@ -71,6 +71,37 @@ def _explain(args: argparse.Namespace) -> int:
     print(report)
     # Non-zero when something is wrong, so this is usable as a CI check.
     return 1 if report.problems else 0
+
+
+def _inventory_passwords(args: argparse.Namespace) -> list[str]:
+    """The passwords named by the repeated ``--password-env`` flags."""
+    passwords = []
+    for var in args.password_env:
+        value = os.environ.get(var)
+        if value is None:
+            raise SystemExit(f"environment variable {var} is not set")
+        passwords.append(value)
+    return passwords
+
+
+def _inventory(args: argparse.Namespace) -> int:
+    passwords = _inventory_passwords(args)
+    report = inventory(args.directory, passwords=passwords or None)
+    # One prompt per locked file, skippable, then a single re-read: a password
+    # typed for one file is tried against all of them, since a folder's .p12
+    # and its extracted key routinely share a passphrase.
+    if report.locked and sys.stdin.isatty():
+        entered = []
+        for item in report.locked:
+            value = getpass.getpass(f"Password for {item.name} (blank to skip): ")
+            if value:
+                entered.append(value)
+        if entered:
+            report = inventory(args.directory, passwords=[*passwords, *entered])
+    print(report)
+    # Non-zero only when nothing here is loadable: locked and unpaired files
+    # are the normal lint of such a folder, not a failure of the inventory.
+    return 0 if report.usable else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,6 +173,30 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     explain_parser.set_defaults(func=_explain)
+
+    inventory_parser = sub.add_parser(
+        "inventory",
+        help="classify a directory of certificate files and pair its identities",
+    )
+    inventory_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="the directory to inventory (top-level files only; default: here)",
+    )
+    inventory_parser.add_argument(
+        "--password-env",
+        metavar="VAR",
+        action="append",
+        default=[],
+        help=(
+            "read a password from this environment variable; repeatable, since "
+            "a folder of exports routinely spans several passwords. There is "
+            "no --password: it would land in shell history and in every "
+            "process listing. Files still locked are prompted for, one each"
+        ),
+    )
+    inventory_parser.set_defaults(func=_inventory)
 
     args = parser.parse_args(argv)
     try:

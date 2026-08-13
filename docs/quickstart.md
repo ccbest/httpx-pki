@@ -68,6 +68,11 @@ your PKI team sent you generally just works.
 Use the explicit `from_pkcs12` / `from_pem` constructors when you would rather
 force one interpretation than rely on detection.
 
+Not sure which of those lines applies to what you were sent? If it arrived as a
+folder, `python -m httpx_pki inventory ./that-folder` will tell you — it names
+every file and prints the call each usable pairing amounts to. See
+[](guide/taking-inventory.md).
+
 :::{tip}
 If a source holds more than one identity — a dual key pair, or a renewed
 certificate kept alongside the one it replaced — httpx-pki refuses to guess and

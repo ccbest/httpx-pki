@@ -19,6 +19,7 @@ from ._exceptions import (
     UnsupportedPlatformError,
 )
 from ._explain import TrustAnchor, X509Explanation, explain
+from ._inventory import DirectoryInventory, InventoryEntry, InventoryIdentity, inventory
 from ._keychain import (
     MacCert,
     list_macos_certificates,
@@ -40,6 +41,10 @@ __all__ = [
     "HTTP_BACKEND",
     "build_ssl_context",
     "explain",
+    "inventory",
+    "DirectoryInventory",
+    "InventoryIdentity",
+    "InventoryEntry",
     "X509Explanation",
     "Problem",
     "ChainLink",

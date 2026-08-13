@@ -5,21 +5,34 @@ error at all — the request succeeds and the server still treats you as the wro
 principal — that is the [last group](#it-connects-as-the-wrong-identity).
 
 :::{tip}
-**Start here if you were handed a certificate and do not know what is in it.**
-`explain()` lays out what a source holds, what it would present, what it would
-trust, and what would stop it working — without building a client, and without
-needing the load to succeed first:
+**Start here if you were handed certificates and do not know what is in them.**
+Two commands, depending on how much you have narrowed it down.
+
+A whole folder, and you do not know which file is which — `inventory()` says
+what each file is, which files pair into an identity, and how to load each
+pairing:
+
+```console
+$ python -m httpx_pki inventory ./corp-export
+```
+
+One source, and you want to know what would stop it working — `explain()` lays
+out what it holds, what it would present, what it would trust, and what is
+wrong with it, without building a client and without needing the load to
+succeed first:
 
 ```console
 $ python -m httpx_pki explain corp.p12
 ```
 
 ```python
+print(httpx_pki.inventory("./corp-export"))
 print(httpx_pki.explain("corp.p12", password="secret"))
 print(client.explain())          # when you already have a session
 ```
 
-See [](guide/inspecting-a-certificate.md#explaining-a-whole-configuration).
+See [](guide/taking-inventory.md) and
+[](guide/inspecting-a-certificate.md#explaining-a-whole-configuration).
 :::
 
 ## Find your error
@@ -83,8 +96,17 @@ a PKI team hands out contain no private key at all:
 
 Those names are conventions, not guarantees — as everywhere else in httpx-pki,
 [what counts is the bytes](guide/loading-certificates.md#the-extension-does-not-matter).
-The reliable way to find out what you have is to try to load it: httpx-pki
-inspects the content when a load fails and tells you what it actually found.
+
+If both halves are somewhere in one folder,
+[`inventory()`](guide/taking-inventory.md) reads all of it and says which two
+files pair up:
+
+```console
+$ python -m httpx_pki inventory ./corp-export
+```
+
+And if you have a single file in hand, try to load it: httpx-pki inspects the
+content when a load fails and tells you what it actually found.
 
 ### "…no private key…"
 
@@ -111,6 +133,10 @@ private key; use it as chain= in from_key_pair or as a verify= CA bundle
 PKIClient.from_key_pair("client.crt", "client.key")
 ```
 
+Not sure which file the key is in — or whether it is even the right key?
+`python -m httpx_pki inventory` matches keys to certificates by public key and
+prints the `from_key_pair` call for each pair it finds.
+
 **2. You were sent the chain, not your credential.** A `.p7b` from a Windows CA is
 frequently the *issuing chain* — useful as `chain=` when you present your
 certificate, or as a `verify=` CA bundle for checking the server, but never a
@@ -133,7 +159,9 @@ CertificateLoadError: PKCS#12 data contains no certificate
 ```
 
 A key with no certificate is equally unusable — you have the proof but not the
-claim. The fix is the same: find the other half.
+claim. The fix is the same: find the other half — and
+[](guide/taking-inventory.md) is how to find it, if it is anywhere in the same
+folder.
 
 ## The key and certificate do not match
 
@@ -155,6 +183,12 @@ over from a CSR that was superseded.
 
 Catching it here is deliberate. Left alone it surfaces much later as an
 unexplained handshake rejection, with nothing pointing at the file pair.
+
+To find the pairing that *does* work, run
+[`inventory()`](guide/taking-inventory.md) over the folder both files came
+from. It matches every key against every certificate by public key, so a
+superseded key and the certificate it no longer belongs to are reported apart —
+each as unpaired, alongside whatever they each really go with.
 
 ## It fails when you make a request
 

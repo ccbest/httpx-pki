@@ -9,6 +9,8 @@ instead — and if you have an error in hand,
 
 Where your credential lives, and how to point httpx-pki at it.
 
+- [](taking-inventory.md) — before you know which file to point at: what a
+  folder of exports holds, which files pair up, and how to load each pairing
 - [](loading-certificates.md) — PKCS#12, PEM, separate key and certificate,
   PKCS#7 chains, and why the file extension never matters
 - [](windows-store.md) — pulling an exportable certificate out of the Windows
