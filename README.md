@@ -204,6 +204,39 @@ client.cert_info()        # CertInfo: subject, issuer, fingerprints, usages, SAN
 
 → [Inspecting a certificate](https://httpx-pki.readthedocs.io/en/stable/guide/inspecting-a-certificate.html)
 
+## Why won't the handshake work?
+
+`explain()` takes the same arguments as the constructors and reports what it
+*would* do instead of doing it — what the source holds, what it would present,
+what it would trust, and what would stop it working:
+
+```console
+$ python -m httpx_pki explain corp.p12 --verify internal-ca.pem
+```
+
+```text
+corp.p12 — PKCS#12, 1 identity, 1 chain certificate
+
+PRESENTS   svc-client
+           valid      2026-01-15 → 2027-01-15   (159 days left)
+           ext usage  client_auth
+
+CHAIN      svc-client
+             └─ Corp Issuing CA   [verified]
+               └─ Corp Root   [NOT SUPPLIED; trust anchor, need not be sent]
+
+TRUSTS     internal-ca.pem — 1 anchor: Corp Root
+
+PROBLEMS   none
+```
+
+It works when *loading* does not — several identities with no selector, or a
+missing password, produce a report rather than an exception. `client.explain()`
+does the same for a live session, and the CLI exits non-zero when there are
+problems, so it works as a CI check.
+
+→ [Explaining a whole configuration](https://httpx-pki.readthedocs.io/en/stable/guide/inspecting-a-certificate.html#explaining-a-whole-configuration)
+
 ## Just the SSL context
 
 Don't want the client wrapper? `build_ssl_context()` gives you the hard part,

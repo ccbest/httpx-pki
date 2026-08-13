@@ -289,7 +289,7 @@ routes, see the next section instead.
 SSLEOFError: EOF occurred in violation of protocol
 ```
 
-**_Quick fix: upgrate to httpx-pki 0.9 or later._**
+**_Quick fix: upgrade to httpx-pki 0.9 or later._**
 
 Distinctive shape: the TLS handshake **succeeds**, and the connection dies
 afterwards. `cert_info()` shows exactly the certificate you expect, and the same

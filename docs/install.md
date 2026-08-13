@@ -29,7 +29,7 @@ $ poetry add httpx-pki
 ```python
 import httpx_pki
 
-print(httpx_pki.__version__)      # 0.8.0
+print(httpx_pki.__version__)      # 0.9.0
 print(httpx_pki.HTTP_BACKEND)     # 'httpx2'
 ```
 

@@ -4,282 +4,177 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
-## Unreleased
+## 0.9.0 — 2026-08-12
 
 - **New: `inventory()` and `python -m httpx_pki inventory` — find the
-  identities in a directory of certificate exports.** The folder a CA hands
-  over mixes PKCS#12 bundles, extracted PEM halves, chain bundles, and
-  issuance artifacts, under extensions that promise nothing. `inventory`
-  classifies every file by content, pairs private keys with certificates
-  across files by public key, and reports the constructor call each pairing
-  amounts to — the work otherwise done by opening files one at a time in an
-  editor. Where a file holds both halves it is named on its own, rather than
-  paired with a loose copy of the same key elsewhere in the folder.
-
-  It takes several passwords, not one, because such folders span several;
-  the report refers to them by position (`password #2`) and never repeats a
-  value. A file no password opens is reported as `LOCKED` rather than
-  skipped — silence about a file is the failure mode this exists to remove —
-  and so is a file that opened in part and kept a key shut, the shape
-  `openssl pkcs12 -out client.pem` writes. Certificate-only files are
-  `UNPAIRED`, annotated when they hold an identity's issuer (an alternative
-  `chain=`/`verify=` source); CSRs and human-readable text dumps are labeled
-  by which encoded file they describe, via public-key and fingerprint
-  matching. The same leaf reachable two ways (a `.p12` and its extracted
-  halves) is presented as one certificate with two routes. Filenames are
-  treated as untrusted, like the names inside the certificates: control
-  characters are stripped from the report, and the suggested call quotes the
-  name as a Python literal.
-
-  Inventory classifies and pairs; it does not audit — `explain()` is the next
-  step for a source it names — and it deliberately never *builds* a session:
-  these folders routinely hold several identities and expired renewals, so
-  choosing one silently is the mistake the report exists to prevent. Top
-  level only; subdirectories are counted, not descended into. A symlink to a
-  file is followed and named as it appears here — somebody linked it in on
-  purpose — while anything that is not a regular file (a device, a socket, a
-  link pointing nowhere) is named without being read. The CLI
-  prompts once per still-locked file (skippable), takes repeatable
-  `--password-env` (no `--password`, same reasoning as `explain`), and exits
-  non-zero only when nothing loadable was found.
+  identities in a directory of certificate exports.** Every file is classified
+  by content, private keys are paired with certificates across files by public
+  key, and each pairing is reported as the constructor call it amounts to. It
+  takes several passwords, referred to in the report by position
+  (`password #2`) and never echoed; a file no password opens is reported as
+  `LOCKED`, certificate-only files as `UNPAIRED` (annotated when they hold an
+  identity's issuer), and CSRs and text dumps are labeled with the encoded file
+  they describe. A leaf reachable two ways (a `.p12` and its extracted halves)
+  is presented once with both routes. Top level only; subdirectories are
+  counted, not descended into, and anything that is not a regular file is named
+  without being read. Filenames are treated as untrusted: control characters
+  are stripped and the suggested call quotes the name as a Python literal.
+  Inventory classifies and pairs — it does not audit (that is `explain()`) and
+  never builds a session. The CLI prompts once per still-locked file
+  (skippable), takes repeatable `--password-env`, and exits non-zero only when
+  nothing loadable was found.
 
 - **Improved: `from_key_pair` names a swapped certificate and private key.**
-  Handing the private key as `certificate=` (or vice versa) used to fail with
-  a generic "could not parse" error, which reads as a broken file. When a
-  source fails to parse but recognizably holds the other half, the error now
-  says which seat holds what — "the two appear to be swapped" for a full swap
-  — instead of sending you to inspect files that are perfectly valid. Applies 
-  everywhere a separate pair is accepted, including `from_env`'s 
+  Passing the private key as `certificate=` (or vice versa) used to fail with a
+  generic "could not parse" error; when a source fails to parse but recognizably
+  holds the other half, the error now says which seat holds what. Applies
+  everywhere a separate pair is accepted, including `from_env`'s
   `{prefix}CERT`/`{prefix}KEY`.
 
 - **New: `explain()`, `client.explain()`, and `python -m httpx_pki explain`.**
-  The audit added in this release tells you something is wrong; this is what
-  tells you what you are holding and what to do about it. It takes the same
-  arguments as `build_ssl_context()` and reports what it *would* do instead of
-  doing it — what the source holds, what it would present, what it would trust,
-  and what would stop it working. `client.explain()` is the more useful entry
-  point when a session exists, because it knows both halves of the
-  configuration.
+  Takes the same arguments as `build_ssl_context()` and reports what it *would*
+  do instead of doing it — what the source holds, what it would present, what it
+  would trust, and what would stop it working. `client.explain()` knows both
+  halves of an existing session's configuration.
 
-  Findings come from the same analyzer as the construction-time warnings, so a
-  report can never contradict the warning that sent you to it — and those
-  warnings now name the call that lays it out. The report is an object, not
-  just text: match on `Problem.code` (`"chain.stray"`, `"trust.intermediate"`,
-  …), which is stable, rather than on the message, which is prose.
+  Findings come from the same analyzer as the construction-time warnings, and
+  those warnings now name the call that lays it out. The report is an object:
+  match on `Problem.code` (`"chain.stray"`, `"trust.intermediate"`, …), which is
+  stable, not on the message. `repr()` is the full report, so it displays in a
+  REPL or notebook.
 
-  It works when *loading* does not, which is the point — a bundle you cannot
-  yet open is exactly the one you need to look inside. Several identities with
-  no selector, or a missing password, produce a report saying so rather than an
-  exception; only a source that cannot be read at all still raises. Where the
-  construction path matches issuers by name and key identifier, `explain()`
-  verifies signatures, so a certificate that merely *claims* the right issuer
-  is caught.
+  It works when *loading* does not: several identities with no selector, or a
+  missing password, produce a report rather than an exception; only a source
+  that cannot be read at all still raises. Issuer relationships are verified by
+  signature, not just by name and key identifier. A chain that stops at an
+  issuer you trust is described rather than flagged; when the issuer is not
+  trusted, the report names the URL from the certificate's Authority
+  Information Access extension — **which httpx-pki never fetches**, since that
+  URL is untrusted input. The `CHAIN` diagram accounts for every certificate
+  that goes on the wire: a stray is drawn at the left margin with no connector,
+  and the client certificate is marked when a copy of it is in the chain too.
 
-  Describing is kept separate from faulting: a chain that stops before its root
-  is the normal shape, and when the missing issuer is one you trust the report
-  says so instead of flagging it. When it is not, the report names the URL the
-  certificate itself gives for its issuer (its Authority Information Access
-  extension) — **which httpx-pki never fetches.** That URL comes from the
-  certificate being inspected, which is untrusted input, so retrieving it would
-  let whoever supplied the file choose a URL your process requests, simply
-  because you looked at the file. Fetch it deliberately instead.
-
-  The CLI takes the same selectors the library does — `--identity`,
-  `--key-usage`, `--extended-key-usage` — plus `--chain` and `--verify` (both
-  repeatable), so a multi-identity bundle can be listed *and then inspected*
-  without dropping into Python. It prompts for a password only when the source
-  needs one and exits non-zero when there are problems, so it works as a CI
-  check. There is deliberately no `--password` flag: an argument lands in shell
-  history and in every process listing. Use `--password-env VAR`.
-
-  The `CHAIN` diagram accounts for every certificate that goes on the wire.
-  A stray — one that is presented but connects to nothing — is drawn at the
-  left margin with no tree connector, because attached to nothing is the point;
-  the client certificate is marked when a copy of it is in the chain too. Both
-  were previously reported under `PROBLEMS` but absent from the diagram, which
-  meant it showed a certificate that is *not* sent (the missing issuer) while
-  hiding ones that are.
-
-  `repr()` of the report is the full report, not a one-line summary. The object
-  exists to be read in a REPL or a notebook, and both display through `repr` —
-  a short one meant the feature did not work where it was aimed.
+  The CLI takes `--identity`, `--key-usage`, `--extended-key-usage`, `--chain`,
+  and `--verify` (the last two repeatable), prompts for a password only when the
+  source needs one, and exits non-zero when there are problems, so it works as a
+  CI check. There is deliberately no `--password` flag — an argument lands in
+  shell history and in every process listing. Use `--password-env VAR`.
 
 - **New: an expired certificate, one that is not yet valid, and one whose
-  ExtendedKeyUsage omits `client_auth` are now reported as problems.** All
-  three are certificates that load perfectly and cannot do the job. Expiry was
-  already warned about at construction but did not appear in `explain()`, which
-  read as the two disagreeing; it is now in both, and still warned about only
-  once — the session's own validity check owns that channel, since it knows
-  about `warn_if_expires_within` and `strict_validity`. The `client_auth` check
-  is new in both places: an *absent* ExtendedKeyUsage means "good for anything"
-  and is not faulted, but one that is present and omits `client_auth` says the
-  certificate was issued for something else, which is what picking the wrong
-  half of a dual key pair looks like.
+  ExtendedKeyUsage omits `client_auth` are now reported as problems.** Expiry
+  was already warned about at construction and now appears in `explain()` too,
+  while still being warned about only once. The `client_auth` check is new in
+  both places: an *absent* ExtendedKeyUsage is unconstrained and is not faulted,
+  but one that is present and omits `client_auth` is.
 
 - **New: `explain()` breaks down every trust anchor.** `TRUSTS` now lists each
   certificate a `verify=` entry contributed with its key and expiry, and marks
-  the ones OpenSSL would reject:
-
-  ```text
-  TRUSTS     internal-ca.pem — 2 anchors
-               Corp Root CA              RSA-4096  expires 2034-01-12
-               Legacy Cross-Sign Root    RSA-2048  UNUSABLE — expired 2023-11-13
-  ```
-
-  Four anchor defects are fatal and visible in the bytes, each confirmed
-  against a real handshake: expired, not yet valid, a key below the OpenSSL
-  security level the local system is configured with (read at runtime, since
-  it is 1 upstream and 2 on Debian/Ubuntu/RHEL), and `CA:TRUE` with a KeyUsage
-  omitting `keyCertSign`.
+  the ones OpenSSL would reject. Four anchor defects are fatal: expired, not yet
+  valid, a key below the OpenSSL security level the local system is configured
+  with (read at runtime), and `CA:TRUE` with a KeyUsage omitting `keyCertSign`.
 
   Two new findings go with it. `trust.no_usable_anchor` fires only when
   **nothing** configured can anchor a chain and no OS/certifi store is also
-  trusted — one dead root beside a live one is the normal shape of a bundle
-  carrying a cross-signing root through a transition, and it verifies fine, so
-  it is described rather than reported. `trust.not_a_ca` is per entry, since a
-  CA forbidden from signing certificates cannot work no matter what else is
-  configured. An unusable anchor also no longer counts as "you trust it, so it
-  need not be sent" against a chain gap.
-
-  Deliberately **not** flagged: a root signed with SHA-1. A trust anchor is
-  trusted by fiat and its own signature is never verified during path
-  validation — confirmed by handshake — so the check every naive certificate
-  scanner ships would be a false alarm on a working configuration.
+  trusted — one dead root beside a live one verifies fine and is described
+  rather than reported. `trust.not_a_ca` is per entry. An unusable anchor also
+  no longer counts as "you trust it, so it need not be sent" against a chain
+  gap. A root signed with SHA-1 is deliberately not flagged: a trust anchor's
+  own signature is never verified during path validation.
 
 - **New: `identity=for_mtls`, the selector to reach for first.** It picks the
-  identity that is valid right now *and* usable for TLS client authentication,
-  which between them cover the two cases that previously needed different
-  selectors: the signing half of a dual key pair, and the current certificate
-  of a renewal pair. `identity=` holds a single value, so `currently_valid` and
-  a client-auth selector could never have been combined — this is the
-  conjunction, not a third thing to choose between.
-
-  A candidate qualifies when its ExtendedKeyUsage lists `client_auth`, or when
-  it has no ExtendedKeyUsage and a KeyUsage that permits signing (an absent
-  extension is unconstrained in X.509, not forbidden; when there is no EKU to
-  go on, the handshake signature is what KeyUsage has to allow). During a
-  renewal overlap the later window wins, the same tie-break `currently_valid`
-  applies. It is a filter like any other, so nothing qualifying raises
-  `CertificateNotFoundError` rather than presenting something unusable.
+  identity that is valid right now *and* usable for TLS client authentication —
+  the conjunction of `currently_valid` and a client-auth filter, which
+  `identity=` could not previously express since it holds a single value. A
+  candidate qualifies when its ExtendedKeyUsage lists `client_auth`, or when it
+  has no ExtendedKeyUsage and a KeyUsage that permits signing. During a renewal
+  overlap the later window wins, as with `currently_valid`, and nothing
+  qualifying raises `CertificateNotFoundError`.
 
   Available everywhere `identity=` is — bundles, both platform stores,
   `HTTPX_PKI_IDENTITY=for_mtls`, and `--identity for_mtls` — and it pickles by
-  name. The `source.ambiguous` and `certificate.no_client_auth` findings now
-  name it as the fix.
-
-  The identity listings in error messages and in `explain()` now show
-  `ext_key_usage` whenever any identity carries one: it is what `for_mtls`
-  filters on, so without it a miss could not explain itself.
+  name. The `source.ambiguous` and `certificate.no_client_auth` findings name it
+  as the fix. Identity listings in error messages and in `explain()` now show
+  `ext_key_usage` whenever any identity carries one.
 
 - **`identity=` now matches the full subject DN on the platform stores**, as it
-  always has on PKCS#12 and PEM bundles. `identity="CN=ACME Client"` — a DN
-  pasted out of `openssl x509 -subject`, `certutil`, or an `explain()` report —
-  selected from a `.p12` and raised `CertificateNotFoundError` against the
-  Windows store and the macOS keychain. `identity=` is the portable spelling
-  and is meant to mean the same thing wherever the certificate came from, so
-  now it does; there is one implementation of the rule behind both.
-
-  Only `identity=` widens. `name=` is the platform-flavored spelling and stays
-  what it is documented as: the subject common name or the store's friendly
-  name / keychain label.
+  always has on PKCS#12 and PEM bundles. `identity="CN=ACME Client"` selected
+  from a `.p12` but raised `CertificateNotFoundError` against the Windows store
+  and the macOS keychain; one implementation now backs both. Only `identity=`
+  widens — `name=` remains the subject common name or the store's friendly name
+  / keychain label.
 
 - **Selection errors list candidates the same way everywhere.** The listing a
   store prints when a selector misses (or matches too much) gained the two
-  things the bundle listing already had: the friendly name or keychain label
-  in parentheses, and `key_usage=<none>` spelled out rather than omitted when
-  a certificate asserts none. A bundle keeps its `[index]` prefix — the one
-  thing a store has no equivalent of, having no stable ordering.
+  things the bundle listing already had: the friendly name or keychain label in
+  parentheses, and `key_usage=<none>` spelled out rather than omitted. A bundle
+  keeps its `[index]` prefix, which a store has no equivalent of.
 
 - **`httpx_pki.testing.make_client_cert()` can omit the ExtendedKeyUsage**
-  extension, by passing an empty `extended_key_usage`. A certificate with no
-  EKU is a different thing from one asserting no usages, and it is the shape
-  the selectors and the audit treat as unconstrained.
+  extension, by passing an empty `extended_key_usage` — the shape the selectors
+  and the audit treat as unconstrained, distinct from a certificate asserting no
+  usages.
 
 - **New: `prune_chain=True` drops chain certificates that are not on the
   path** from the client certificate upward — the fix for the `chain.stray` and
   `chain.duplicate_leaf` findings, which previously could only be reported. It
   is accepted by every constructor, `build_ssl_context()`,
   `build_windows_ssl_context()`, `build_macos_ssl_context()`, and `explain()`
-  (`--prune-chain` on the CLI), and survives `reload()` and pickling.
+  (`--prune-chain` on the CLI), and survives `reload()` and pickling. It reuses
+  the audit's own chain walk, so what it removes is exactly what the audit would
+  have reported.
 
-  The case it exists for is material you cannot edit: junk baked into a `.p12`
-  your PKI team exported, or a file an agent rewrites on every rotation. A
-  `chain=` you passed yourself you can simply fix. It is safe by construction —
-  a certificate nothing reaches contributes nothing to path building, which is
-  why `pkcs12_material()` has always excluded other identities' certificates
-  for the same reason — and it reuses the audit's own chain walk, so what it
-  removes is exactly what the audit would have reported.
+  Opt-in, and it will not prune when *nothing* is on the path: leaving a bare
+  leaf would silence `chain.disconnected` while the handshake still failed for
+  that reason, so the material is left alone and the diagnosis survives.
 
-  Opt-in, because silently changing what goes on the wire is worse than the
-  warning. And it will not prune when *nothing* is on the path: dropping every
-  certificate would leave a bare leaf, which reads as the ordinary "the root is
-  not included" shape and would silence `chain.disconnected` while the
-  handshake still failed for exactly that reason. Subtraction cannot fix an
-  absence, so the material is left alone and the diagnosis survives.
-
-- **New: `verify=` takes a list, combining trust sources.** Naming a CA bundle
-  replaces the default trust rather than adding to it, so a client that talks
-  to both an internal mTLS service and anything public had to build its own
-  context or concatenate bundles at build time.
+- **New: `verify=` takes a list, combining trust sources.**
   `verify=["system", "/etc/pki/internal-root.pem"]` verifies against the OS
-  trust store *and* a private root; any mix works, and a one-element list means
-  exactly what the bare value means. `False` and a ready-made `ssl.SSLContext`
-  cannot appear in a list — neither can be merged with anything — and raise
-  `TypeError`, as does an empty list. On Windows the combination is two
-  sequential attempts rather than one union (truststore's design), so a path
-  that mixes anchors from both sets can fail there while succeeding elsewhere.
+  trust store *and* a private root, where naming a CA bundle previously replaced
+  the default trust rather than adding to it. Any mix works, and a one-element
+  list means exactly what the bare value means. `False` and a ready-made
+  `ssl.SSLContext` cannot appear in a list and raise `TypeError`, as does an
+  empty list. On Windows the combination is two sequential attempts rather than
+  one union (truststore's design), so a path that mixes anchors from both sets
+  can fail there while succeeding elsewhere.
 - **New: a `verify=` entry may be a directory** of certificates. It is read by
-  httpx-pki rather than passed to OpenSSL as a `capath`, which is what makes it
-  work at all for the common case: a `capath` needs `c_rehash`-style hashed
-  filenames, so a directory mounted from a Kubernetes ConfigMap would be
-  ignored, and it is resolved lazily, so it is invisible to the macOS and
-  Windows platform verifiers. Non-certificate files in the directory are
-  skipped; one with no certificates at all is an error.
+  httpx-pki rather than passed to OpenSSL as a `capath`, so it needs no
+  `c_rehash`-style hashed filenames (a Kubernetes ConfigMap mount works) and is
+  visible to the macOS and Windows platform verifiers. Non-certificate files are
+  skipped; a directory with no certificates at all is an error.
 - **New: `chain=` on every constructor.** `PKIClient(...)`, `from_pkcs12`,
   `from_pem`, and `build_ssl_context` now accept the keyword `from_key_pair`
-  already had, with the same signature (one source, a list, or raw bytes). A
-  PKCS#12 exported without its chain — what Windows produces unless "include
-  all certificates in the certification path" is ticked — was the one shape
-  that could not be completed, despite missing intermediates being the most
-  common cause of a server rejecting a client certificate. `auto_reload`
-  watches the chain files and `reload()` re-reads them.
-- **New: advisory warnings for certificates that cannot do their job.** Two
-  silent misconfigurations now report at construction instead of becoming an
-  OpenSSL error that names neither the file nor the certificate at fault. In
+  already had, with the same signature (one source, a list, or raw bytes) — the
+  completion for a PKCS#12 exported without its chain, which Windows produces
+  unless "include all certificates in the certification path" is ticked.
+  `auto_reload` watches the chain files and `reload()` re-reads them.
+- **New: advisory warnings for certificates that cannot do their job.** In
   `verify=`: a certificate that is not self-signed cannot be a trust anchor, so
-  an intermediate (which would short-circuit path validation to the root that
-  should have been checked), a leaf, or the client's own certificate each warn.
-  In `chain=` and in the chain a bundle carries: a certificate that is not on
-  the path from the client certificate to its issuer is at best wasted
-  handshake bytes. All are `TLSConfigWarning` and can be filtered. Deliberately
-  quiet: a self-signed certificate in `verify=` (a root, or the self-signed
-  server certificate a development setup pins) and a cross-signed CA in
-  `chain=` (the walk follows every path, so the second copy is recognized
-  rather than reported as a stray). The audit is best-effort and cannot cause a
-  load to fail.
+  an intermediate, a leaf, or the client's own certificate each warn. In
+  `chain=` and in the chain a bundle carries: a certificate that is not on the
+  path from the client certificate to its issuer is at best wasted handshake
+  bytes. All are `TLSConfigWarning` and can be filtered. Deliberately quiet: a
+  self-signed certificate in `verify=` and a cross-signed CA in `chain=`. The
+  audit is best-effort and cannot cause a load to fail.
 - **New: `HTTPX_PKI_CA` takes several sources**, separated by `os.pathsep`
   (`:` on POSIX, `;` on Windows) — `HTTPX_PKI_CA=system:/etc/pki/root.pem`. A
   single value stays a single value.
 - **A bare DER certificate is now accepted as a `verify=` CA bundle.** It was
   previously the one encoding rejected there, since OpenSSL's `cafile` is
-  PEM-only; the sources are now normalized before loading, so DER, PEM, and
+  PEM-only; sources are now normalized before loading, so DER, PEM, and
   certs-only PKCS#7 all work in `verify=` as they already did elsewhere.
 - **Fixed: servers that ask for the client certificate after the handshake are
   now answered.** Every `ssl.SSLContext` httpx-pki builds offers TLS 1.3
   post-handshake authentication ([RFC 8446 §4.6.2][rfc8446-pha]). A server that
-  requires mTLS on only some of its routes cannot ask during the handshake — it
-  does not know the route yet — so through TLS 1.2 it renegotiated, and under
-  TLS 1.3, which removed renegotiation, it sends a bare `CertificateRequest`
-  once the handshake is done. A server may only ask a client that advertised
-  willingness in its ClientHello, so this cannot be decided per-request; a
+  requires mTLS on only some of its routes cannot ask during the handshake, so
+  under TLS 1.3 it sends a bare `CertificateRequest` once the handshake is done
+  — and may only ask a client that advertised willingness in its ClientHello. A
   client that did not is refused with `EXTENSION_NOT_RECEIVED`, which surfaces
   as a dropped connection on a handshake that appeared to succeed. Affected
   setups include ASP.NET Core Kestrel's `ClientCertificateMode.DelayCertificate`,
   `mod_ssl`'s per-`<Location>` `SSLVerifyClient`, and IIS's per-path negotiate
-  client certificate. Servers that require mTLS for the whole listener were
-  never affected. Offering this costs nothing: these contexts exist to present a
-  client certificate and already present it unasked during the handshake, so
-  there is no opt-out.
+  client certificate; servers that require mTLS for the whole listener were
+  never affected. There is no opt-out — these contexts already present the
+  client certificate unasked during the handshake.
 
 [rfc8446-pha]: https://www.rfc-editor.org/rfc/rfc8446#section-4.6.2
 
