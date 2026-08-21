@@ -152,6 +152,7 @@ mix anchors from both sets can fail on Windows while succeeding on Linux and
 macOS. This is truststore's design and nothing httpx-pki can change.
 :::
 
+(intermediate-as-anchor)=
 ## An intermediate — or a leaf — as the anchor
 
 The contexts httpx-pki builds from a bundle or directory verify **partial

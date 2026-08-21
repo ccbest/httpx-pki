@@ -161,7 +161,7 @@ enforcing EKU will reject it.
 Everything else the audit finds describes a configuration that **still
 works** — an intermediate CA or a leaf in `verify=` (a genuine, if narrow,
 anchor under [partial-chain
-verification](../guide/server-trust.md#an-intermediate-or-a-leaf-as-the-anchor)),
+verification](#intermediate-as-anchor)),
 your own certificate in `verify=`, a chain certificate that connects to
 nothing, the leaf sent twice. Those findings are **report-only**: they appear
 under `PROBLEMS` in [`explain()`](../guide/inspecting-a-certificate.md), where
