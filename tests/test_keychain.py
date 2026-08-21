@@ -12,7 +12,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -27,7 +26,6 @@ from httpx_pki import (
     CertificateNotFoundError,
     MacCert,
     PKIClient,
-    TLSConfigWarning,
     UnsupportedPlatformError,
     build_macos_ssl_context,
     cert_info,
@@ -609,7 +607,11 @@ def test_build_macos_ssl_context_prunes_the_exported_chain(
     monkeypatch: pytest.MonkeyPatch, ca_bundle: CertBundle
 ) -> None:
     # As for the Windows store: the keychain export is not something the
-    # caller can edit, so prune_chain= is the only way to drop a stray.
+    # caller can edit, so prune_chain= is the only way to drop a stray. The
+    # context itself hands nothing back to inspect, so the material is captured
+    # on its way into the context builder.
+    import httpx_pki._ssl as ssl_module
+
     leaf = make_client_cert("svc", ca=ca_bundle)
     messy = pkcs12.serialize_key_and_certificates(
         b"svc",
@@ -623,9 +625,22 @@ def test_build_macos_ssl_context_prunes_the_exported_chain(
     monkeypatch.setattr(keychain, "_export_identity", lambda cert: (messy, b""))
     monkeypatch.setattr(keychain.sys, "platform", "darwin")
 
-    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
-        build_macos_ssl_context(name="svc")
+    captured = []
+    original = ssl_module._context_from_material
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", TLSConfigWarning)
-        build_macos_ssl_context(name="svc", prune_chain=True)
+    def spy(material: object, verify: object = True) -> object:
+        captured.append(material)
+        return original(material, verify)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ssl_module, "_context_from_material", spy)
+
+    build_macos_ssl_context(name="svc")
+    build_macos_ssl_context(name="svc", prune_chain=True)
+    unpruned, pruned = captured
+    assert {cert_info(p).common_name for p in unpruned.ca_pems} == {  # type: ignore[attr-defined]
+        "httpx-pki test CA",
+        "Unrelated Root",
+    }
+    assert [cert_info(p).common_name for p in pruned.ca_pems] == [  # type: ignore[attr-defined]
+        "httpx-pki test CA"
+    ]

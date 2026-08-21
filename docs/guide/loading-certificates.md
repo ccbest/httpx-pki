@@ -129,15 +129,10 @@ re-reads them.
 
 :::{tip}
 Certificates passed as `chain=` that are not actually between your certificate
-and its issuer are reported at construction, rather than becoming a handshake
-error the server explains badly:
-
-```text
-TLSConfigWarning: 1 of 2 presented certificates ('Unrelated Root') are not on
-this certificate's chain. They are sent for nothing, and a strict server may
-reject the chain. Remove them from chain=, or pass prune_chain=True to drop
-them automatically.
-```
+and its issuer show up in the [`explain()`](inspecting-a-certificate.md)
+report as `chain.stray` — sent for nothing, and a strict server may reject the
+chain. A `chain=` that connects to *nothing* is the one that warns at
+construction (`chain.disconnected`), because that handshake will fail.
 :::
 
 ### Dropping what does not belong
@@ -154,7 +149,7 @@ PKIClient("corp.p12", password="secret", prune_chain=True)
 It is safe by construction: a certificate nothing reaches contributes nothing
 to path building, which is why httpx-pki has always excluded other identities'
 certificates from a multi-identity bundle's chain. It is opt-in because
-silently changing what goes on the wire is worse than the warning, and it
+silently changing what goes on the wire is worse than reporting it, and it
 survives `reload()` and pickling.
 
 :::{note}

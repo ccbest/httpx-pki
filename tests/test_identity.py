@@ -25,7 +25,6 @@ from httpx_pki import (
     CertificateLoadError,
     CertificateNotFoundError,
     PKIClient,
-    TLSConfigWarning,
     build_ssl_context,
     cert_info,
     currently_valid,
@@ -432,13 +431,14 @@ def test_keys_inside_the_encrypted_safe_fall_back(
     assert len(identities) == 1
     # The consequence of that fallback is visible: the identity that could not
     # be enumerated is left looking like a chain certificate, and the chain
-    # audit says so rather than letting it go quietly onto the wire.
-    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
-        session = PKIClient(blob, password=P12_PASSWORD)
+    # audit reports it (chain.stray, report-only) rather than letting it go
+    # unremarked onto the wire.
+    session = PKIClient(blob, password=P12_PASSWORD)
     with session:
         assert (
             session.certificate.serial_number == signing.cert.serial_number
         )
+        assert "chain.stray" in {p.code for p in session.explain().problems}
 
 
 def test_three_identities(ca_bundle: CertBundle) -> None:

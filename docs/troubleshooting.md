@@ -67,8 +67,8 @@ of these carry a filename or a count as well. Match on that.
 | `SSLV3_ALERT_CERTIFICATE_EXPIRED` | Expired, and the server checked | [](#your-certificate-has-expired) |
 | **No error at all** | | |
 | The server authenticates you as the wrong principal | A shared `ssl.SSLContext`, the wrong half of a dual key pair, or a rotation you did not pick up | [](#it-connects-as-the-wrong-identity) |
-| `An intermediate is not a trust anchor` | A `verify=` entry that cannot anchor a chain | [](guide/server-trust.md#combining-trust-sources) |
-| `not on this certificate's chain` | Chain certificates that do not connect your certificate to its issuer | [](#the-server-does-not-trust-you) |
+| `reach the issuer` | None of your chain certificates connect your certificate to its issuer | [](#the-server-does-not-trust-you) |
+| `none of the … trust anchors can be used` | Every `verify=` anchor is expired or otherwise unusable | [](guide/server-trust.md#combining-trust-sources) |
 
 :::{tip}
 Not finding your message? [](reference/exceptions.md) has the full set with each

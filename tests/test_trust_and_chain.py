@@ -22,6 +22,7 @@ from httpx_pki import (
     TLSConfigWarning,
     build_ssl_context,
     cert_info,
+    explain,
 )
 from httpx_pki.testing import CertBundle, make_ca, make_client_cert
 from tests.conftest import P12_PASSWORD, Signed
@@ -240,40 +241,54 @@ def test_chain_files_are_watched_for_auto_reload(
     assert chain in session._watch_paths
 
 
-# -- the audit: verify= entries that cannot anchor --------------------------
+# -- the audit: verify= entries that anchor oddly or not at all -------------
+#
+# The report-only findings: each configuration works (partial-chain
+# verification makes an intermediate or a leaf a genuine anchor), so
+# construction stays quiet and explain() carries the description.
 
 
-def test_an_intermediate_in_verify_warns(
+def _codes(client_p12: bytes, **kwargs: object) -> set[str]:
+    report = explain(client_p12, password=P12_PASSWORD, **kwargs)  # type: ignore[arg-type]
+    return {problem.code for problem in report.problems}
+
+
+def test_an_intermediate_in_verify_is_report_only(
     client_p12: bytes, ca_bundle: CertBundle, tmp_path: Path
 ) -> None:
     intermediate = _make_intermediate("Issuing CA", ca_bundle)
     path = tmp_path / "inter.pem"
     path.write_bytes(intermediate.cert_pem)
 
-    with pytest.warns(TLSConfigWarning, match="intermediate CA"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
         build_ssl_context(client_p12, password=P12_PASSWORD, verify=str(path))
+    assert "trust.intermediate" in _codes(client_p12, verify=str(path))
 
 
-def test_a_leaf_in_verify_warns(
+def test_a_leaf_in_verify_is_report_only(
     client_p12: bytes, ca_bundle: CertBundle, tmp_path: Path
 ) -> None:
-    # Somebody else's leaf -- not this client's own, which has its own message.
+    # Somebody else's leaf -- not this client's own, which has its own finding.
     other = make_client_cert("some-other-service", ca=ca_bundle)
     path = tmp_path / "leaf.pem"
     path.write_bytes(other.cert_pem)
-    with pytest.warns(TLSConfigWarning, match="cannot anchor a chain"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
         build_ssl_context(client_p12, password=P12_PASSWORD, verify=str(path))
+    assert "trust.leaf" in _codes(client_p12, verify=str(path))
 
 
-def test_the_clients_own_certificate_in_verify_warns(
+def test_the_clients_own_certificate_in_verify_is_report_only(
     client_p12: bytes, client: Signed, ca_file: Path, tmp_path: Path
 ) -> None:
     own = tmp_path / "own.pem"
     own.write_bytes(client.cert_pem)
-    with pytest.warns(TLSConfigWarning, match="own certificate"):
-        build_ssl_context(
-            client_p12, password=P12_PASSWORD, verify=[str(ca_file), str(own)]
-        )
+    verify = [str(ca_file), str(own)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
+        build_ssl_context(client_p12, password=P12_PASSWORD, verify=verify)
+    assert "trust.own_certificate" in _codes(client_p12, verify=verify)
 
 
 def test_a_self_signed_root_is_silent(client_p12: bytes, ca_file: Path) -> None:
@@ -307,16 +322,17 @@ def test_certifi_and_system_are_not_audited(client_p12: bytes) -> None:
 # -- the audit: chain certificates that do not belong -----------------------
 
 
-def test_an_unrelated_chain_certificate_warns(client_p12: bytes, ca: Signed) -> None:
-    # The real issuer plus a stranger: the chain is usable, but one entry has
-    # no business being there.
+def test_an_unrelated_chain_certificate_is_report_only(
+    client_p12: bytes, ca: Signed
+) -> None:
+    # The real issuer plus a stranger: the chain is usable, so construction is
+    # quiet, but the entry has no business being there and the report says so.
     stranger = make_ca("Unrelated Root")
-    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
-        build_ssl_context(
-            client_p12,
-            password=P12_PASSWORD,
-            chain=[ca.cert_pem, stranger.cert_pem],
-        )
+    chain = [ca.cert_pem, stranger.cert_pem]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", TLSConfigWarning)
+        build_ssl_context(client_p12, password=P12_PASSWORD, chain=chain)
+    assert "chain.stray" in _codes(client_p12, chain=chain)
 
 
 def test_an_entirely_wrong_chain_says_so_differently(client_p12: bytes) -> None:
@@ -428,16 +444,13 @@ def test_prune_chain_drops_a_stray(client_p12: bytes, ca: Signed) -> None:
     stranger = make_ca("Unrelated Root")
     chain = [ca.cert_pem, stranger.cert_pem]
 
-    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
-        noisy = PKIClient(client_p12, password=P12_PASSWORD, chain=chain)
-    noisy.close()
+    with PKIClient(client_p12, password=P12_PASSWORD, chain=chain) as unpruned:
+        assert unpruned._material.ca_pems == chain
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", TLSConfigWarning)
-        with PKIClient(
-            client_p12, password=P12_PASSWORD, chain=chain, prune_chain=True
-        ) as session:
-            assert session._material.ca_pems == [ca.cert_pem]
+    with PKIClient(
+        client_p12, password=P12_PASSWORD, chain=chain, prune_chain=True
+    ) as session:
+        assert session._material.ca_pems == [ca.cert_pem]
 
 
 def test_prune_chain_drops_a_duplicated_leaf(

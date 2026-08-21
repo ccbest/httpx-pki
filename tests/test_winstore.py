@@ -12,7 +12,6 @@ import datetime
 import os
 import subprocess
 import sys
-import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -26,7 +25,6 @@ from httpx_pki import (
     CertificateLoadError,
     CertificateNotFoundError,
     PKIClient,
-    TLSConfigWarning,
     UnsupportedPlatformError,
     WinCert,
     build_windows_ssl_context,
@@ -803,8 +801,10 @@ def test_build_windows_ssl_context_prunes_the_exported_chain(
 ) -> None:
     # A store that exports an unrelated root alongside the real chain: bytes
     # the caller cannot edit, which is exactly what prune_chain= is for. The
-    # stray warning is the observable, since the context itself hands nothing
-    # back to inspect.
+    # context itself hands nothing back to inspect, so the material is captured
+    # on its way into the context builder.
+    import httpx_pki._ssl as ssl_module
+
     leaf = make_client_cert("svc", ca=ca_bundle)
     messy = pkcs12.serialize_key_and_certificates(
         b"svc",
@@ -818,9 +818,22 @@ def test_build_windows_ssl_context_prunes_the_exported_chain(
     monkeypatch.setattr(winstore, "_export_pfx", lambda cert: (messy, b""))
     monkeypatch.setattr(winstore.sys, "platform", "win32")
 
-    with pytest.warns(TLSConfigWarning, match="not on this certificate's chain"):
-        build_windows_ssl_context(name="svc")
+    captured = []
+    original = ssl_module._context_from_material
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", TLSConfigWarning)
-        build_windows_ssl_context(name="svc", prune_chain=True)
+    def spy(material: object, verify: object = True) -> object:
+        captured.append(material)
+        return original(material, verify)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ssl_module, "_context_from_material", spy)
+
+    build_windows_ssl_context(name="svc")
+    build_windows_ssl_context(name="svc", prune_chain=True)
+    unpruned, pruned = captured
+    assert {cert_info(p).common_name for p in unpruned.ca_pems} == {  # type: ignore[attr-defined]
+        "httpx-pki test CA",
+        "Unrelated Root",
+    }
+    assert [cert_info(p).common_name for p in pruned.ca_pems] == [  # type: ignore[attr-defined]
+        "httpx-pki test CA"
+    ]

@@ -245,22 +245,21 @@ def test_an_untrusted_missing_issuer_gets_no_reassurance(
 
 
 def test_client_explain_agrees_with_the_warning_it_raised(
-    client_p12: bytes, ca: Signed
+    client_p12: bytes,
 ) -> None:
     """One analyzer: a report can never contradict the warning that sent
-    someone to it."""
+    someone to it. Uses chain.disconnected, one of the findings that still
+    warns at construction because it predicts a failing handshake."""
     stranger = make_ca("Unrelated Root")
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
-        session = PKIClient(
-            client_p12, password=P12_PASSWORD, chain=[ca.cert_pem, stranger.cert_pem]
-        )
+        session = PKIClient(client_p12, password=P12_PASSWORD, chain=stranger.cert_pem)
     warned = [str(w.message) for w in rec if issubclass(w.category, TLSConfigWarning)]
 
     with session:
         report = session.explain()
-    assert "chain.stray" in _codes(report)
-    assert any("not on this certificate's chain" in message for message in warned)
+    assert "chain.disconnected" in _codes(report)
+    assert any("reach the issuer" in message for message in warned)
     # And the warning points at the call that lays it out.
     assert any("explain()" in message for message in warned)
 

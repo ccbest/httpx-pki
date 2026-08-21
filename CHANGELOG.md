@@ -4,6 +4,32 @@ Notable changes to httpx-pki, by release. This project follows
 [semantic versioning](https://semver.org/); entries are feature-level — see
 the git history for the fine print.
 
+## Unreleased
+
+- **Changed: partial-chain verification on every supported Python.** The
+  contexts built from a CA bundle or directory now set
+  `VERIFY_X509_PARTIAL_CHAIN` on Python 3.10–3.12, matching the
+  `ssl.create_default_context` default that Python 3.13 introduced. An
+  intermediate CA in `verify=` therefore anchors chains by itself on every
+  version — deliberately scoped trust — and a CA-issued leaf pins exactly that
+  server certificate. Only this flag is backported; `VERIFY_X509_STRICT`
+  (3.13's other new default) is not, since it rejects real-world certificates
+  older interpreters accept. Caller-supplied `ssl.SSLContext`s and the
+  platform-verifier (`"system"`) path are untouched.
+
+- **Changed: audit findings whose configuration still works no longer warn at
+  construction.** `trust.intermediate`, `trust.leaf`, `trust.own_certificate`,
+  `trust.not_a_ca`, `chain.stray`, and `chain.duplicate_leaf` describe wasted
+  bytes, dead weight, or trust narrower than perhaps intended — not a failing
+  handshake — so they now appear only in the `explain()` report, where whoever
+  is looking at the material reads them. Construction still warns on what
+  predicts failure: `chain.disconnected`, `trust.no_usable_anchor`, and
+  `certificate.no_client_auth` (plus the validity, `verify=False`, SSL-context,
+  transport, and pickling warnings, which are unchanged). The
+  `trust.intermediate` and `trust.leaf` messages are reworded to match
+  partial-chain reality — the old claim that an intermediate "is not a trust
+  anchor" was wrong on Python 3.13+.
+
 ## 0.9.0 — 2026-08-12
 
 - **New: `inventory()` and `python -m httpx_pki inventory` — find the

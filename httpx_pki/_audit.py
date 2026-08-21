@@ -1,14 +1,14 @@
 """Analyzing certificate material that is loaded but cannot do its job.
 
-Two silent misconfigurations, both of which produce a client that builds
-cleanly and fails at handshake time with an OpenSSL error naming neither the
-file nor the certificate at fault:
+Two families of finding, neither of which is visible at construction time:
 
-*Trust anchors that cannot anchor.* ``verify=`` accepting a list makes it easy
-to pour every certificate on hand into it. A certificate that is not
-self-signed is not a trust anchor: an intermediate short-circuits path
-validation to the root that should have been checked, and a leaf anchors
-nothing at all.
+*Trust entries that do not do what they look like.* ``verify=`` accepting a
+list makes it easy to pour every certificate on hand into it. The contexts
+built here verify partial chains, so an intermediate CA or a leaf in
+``verify=`` genuinely anchors -- as a deliberately narrowed trust, or an exact
+pin -- but each behaves differently from the root someone may have meant to
+trust, and an expired anchor or a CA forbidden from signing anchors nothing at
+all.
 
 *Chain certificates that are not on the chain.* Certificates presented
 alongside the client certificate are meant to connect it to its issuer. One
@@ -17,10 +17,13 @@ server rejects.
 
 This module *finds* those; it does not report them. Every check produces
 :class:`Problem` objects, which two consumers render:
-:func:`emit_warnings` turns them into :class:`~httpx_pki.TLSConfigWarning`\\ s
-on the construction path, and :mod:`httpx_pki._explain` lays them out in a
-report. One analyzer, so a report can never contradict the warning that sent
-someone to it.
+:mod:`httpx_pki._explain` lays all of them out in a report, and
+:func:`emit_warnings` turns the subset that predicts a failing handshake into
+:class:`~httpx_pki.TLSConfigWarning`\\ s on the construction path. A finding
+whose configuration still works belongs in the report someone consults, not in
+a warning everyone learns to scroll past -- see ``_REPORT_ONLY``. One
+analyzer, so a report can never contradict the warning that sent someone to
+it.
 
 Everything here is advisory and best-effort: it runs on material that has
 already been loaded, never decides whether a load succeeds, and treats a
@@ -618,7 +621,7 @@ def analyze_certificate(client_cert: x509.Certificate) -> list[Problem]:
 def analyze_trust_sources(
     sources: list[TrustSourceCerts], client_cert: x509.Certificate | None
 ) -> list[Problem]:
-    """Problems with ``verify=`` entries that cannot serve as trust anchors.
+    """Findings about ``verify=`` entries that anchor oddly or not at all.
 
     Grouped per source and per category rather than one problem per
     certificate: a bundle assembled wrongly is one mistake, and reporting it
@@ -671,13 +674,15 @@ def analyze_trust_sources(
                     message=(
                         f"verify={source.label!r} contains "
                         f"{_plural(len(intermediates), 'intermediate CA certificate')} "
-                        f"({_listing(intermediates)}). An intermediate is not a "
-                        "trust anchor: trusting one accepts any server beneath "
-                        "it without checking the root that issued it."
+                        f"({_listing(intermediates)}). Each anchors chains by "
+                        "itself (partial-chain verification), which is narrower "
+                        "than trusting its root: servers under a sibling "
+                        "intermediate will not verify, and the root's say over "
+                        "it -- revocation, distrust -- is never consulted."
                     ),
                     remedy=(
-                        f"Trust the root instead ({roots}), or pass them as "
-                        "chain= to present them."
+                        "Deliberately scoped trust can stay as it is; to trust "
+                        f"the whole PKI, trust the root instead ({roots})."
                     ),
                     certificates=_infos(intermediates),
                 )
@@ -691,12 +696,13 @@ def analyze_trust_sources(
                         f"verify={source.label!r} contains "
                         f"{_plural(len(leaves), 'certificate')} "
                         f"({_listing(leaves)}) that are neither self-signed nor "
-                        "CAs. They cannot anchor a chain and have no effect on "
-                        "server trust."
+                        "CAs. Each pins exactly that server certificate "
+                        "(partial-chain verification): it verifies today and "
+                        "stops verifying the day the server renews it."
                     ),
                     remedy=(
-                        "Trust their issuer instead, or pass them as chain= to "
-                        "present them."
+                        "A deliberate pin can stay as it is; otherwise trust "
+                        "the issuing CA, which survives renewal."
                     ),
                     certificates=_infos(leaves),
                 )
@@ -715,6 +721,25 @@ def analyze_trust_sources(
 # warn_if_expires_within and strict_validity, and says it better. Saying it
 # twice would be worse than either.
 _WARNED_ELSEWHERE = frozenset({"certificate.expired", "certificate.not_yet_valid"})
+
+# Findings whose configuration still works. A construction-time warning
+# promises "this will fail, or is unsafe"; these describe wasted handshake
+# bytes, entries that are dead weight, or trust that is narrower than perhaps
+# intended -- so they appear in the explain() report only, where whoever is
+# actually looking at the material will read them. trust.not_a_ca is here
+# because its fatal case (it was the only anchor) is what
+# trust.no_usable_anchor warns about; with other anchors present it is dead
+# weight, not breakage.
+_REPORT_ONLY = frozenset(
+    {
+        "trust.intermediate",
+        "trust.leaf",
+        "trust.own_certificate",
+        "trust.not_a_ca",
+        "chain.stray",
+        "chain.duplicate_leaf",
+    }
+)
 
 
 def _anchor_candidates(
@@ -803,12 +828,13 @@ def emit_warnings(problems: list[Problem], stacklevel: int = 4) -> None:
     """Report *problems* as :class:`~httpx_pki.TLSConfigWarning`\\ s.
 
     The construction-path consumer, and a strict subset of what the report
-    shows -- reporting more is not contradicting. Each warning ends by naming
-    the call that lays the whole thing out, because a finding the reader cannot
-    act on is only half of one.
+    shows -- reporting more is not contradicting. What survives the two skip
+    sets is exactly the findings that predict a failing handshake. Each warning
+    ends by naming the call that lays the whole thing out, because a finding
+    the reader cannot act on is only half of one.
     """
     for problem in problems:
-        if problem.code in _WARNED_ELSEWHERE:
+        if problem.code in _WARNED_ELSEWHERE or problem.code in _REPORT_ONLY:
             continue
         warnings.warn(
             f"{problem.message} {problem.remedy} "
