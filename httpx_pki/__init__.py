@@ -79,4 +79,4 @@ __all__ = [
     "MacCert",
 ]
 
-__version__ = "0.9.1dev"
+__version__ = "0.9.1"
