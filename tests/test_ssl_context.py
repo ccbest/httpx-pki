@@ -82,6 +82,32 @@ def test_build_ssl_context_mounts_on_plain_httpx_client(
         assert resp.text == "mtls-ok"
 
 
+def test_bundle_context_anchors_partial_chains(
+    client_p12: bytes, tmp_path: Path
+) -> None:
+    # Python 3.13's create_default_context sets VERIFY_X509_PARTIAL_CHAIN (an
+    # intermediate CA in verify= anchors a chain by itself); we set it on older
+    # interpreters too so the behavior does not depend on the Python version.
+    from httpx_pki.testing import make_ca
+
+    ca_file = tmp_path / "ca.pem"
+    ca_file.write_bytes(make_ca().cert_pem)
+    ctx = build_ssl_context(client_p12, password=P12_PASSWORD, verify=str(ca_file))
+    assert ctx.verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN
+
+
+def test_partial_chain_leaves_caller_context_alone(client_p12: bytes) -> None:
+    # A caller-supplied context keeps its own verification semantics; forcing
+    # the flag on would change how that context verifies everywhere it is used.
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.verify_flags &= ~ssl.VERIFY_X509_PARTIAL_CHAIN
+    with pytest.warns(TLSConfigWarning, match="pre-built ssl.SSLContext"):
+        out = build_ssl_context(client_p12, password=P12_PASSWORD, verify=ctx)
+    assert not out.verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN
+
+
 # -- default trust: the OS store via truststore (verify=True / "system") -----
 
 

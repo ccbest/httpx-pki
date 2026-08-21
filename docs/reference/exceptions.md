@@ -140,41 +140,39 @@ clients quietly sharing one identity. See
 [](../guide/server-trust.md#passing-your-own-ssl-context) and
 [](../guide/advanced.md).
 
-The rest are **advisory**: the client works, but some certificate you supplied
-cannot do the job it was given. They are grouped per source, so a bundle
-assembled wrongly produces one warning rather than one per certificate.
+The audit that runs at construction warns only on findings that predict a
+**failing handshake**. Findings are grouped per source, so a bundle assembled
+wrongly produces one warning rather than one per certificate.
 
 ```text
-verify='ca.pem' contains 2 intermediate CA certificates ('Issuing CA', ...).
-An intermediate is not a trust anchor: trusting one accepts any server beneath
-it without checking the root that issued it.
-
-verify='ca.pem' contains 1 certificate ('some-service') that are neither
-self-signed nor CAs. They cannot anchor a chain and have no effect on server
-trust.
-
-verify='ca.pem' contains this client's own certificate. verify= sets which CAs
-identify the server, so this entry has no effect.
-
-1 of 2 presented certificates ('Unrelated Root') are not on this certificate's
-chain.
-
 none of the 1 presented certificate ('Unrelated Root') reach the issuer
-'Corp Issuing CA'.
+'Corp Issuing CA'. The server cannot build a path and will reject the
+handshake with unknown_ca.
 
-the client certificate is also in its own chain, so it is sent twice.
-
-the client certificate expired on 2026-08-08. Handshakes will be rejected.
+none of the 2 configured trust anchors can be used: Old Root (expired
+2023-11-13); Older Root (expired 2021-02-01). Every server certificate will
+fail verification.
 
 the client certificate's ExtendedKeyUsage is email_protection, which omits
-client_auth.
+client_auth. It was not issued for client authentication and a server
+enforcing EKU will reject it.
 ```
 
-A **self-signed** certificate in `verify=` never warns — that is a root CA, and
-equally the self-signed server certificate a development setup pins. A
-cross-signed CA in `chain=` never warns either: the chain is followed along
-every path, so a second copy of an intermediate under a different root is
-recognized rather than reported as a stray. See
+Everything else the audit finds describes a configuration that **still
+works** — an intermediate CA or a leaf in `verify=` (a genuine, if narrow,
+anchor under [partial-chain
+verification](#intermediate-as-anchor)),
+your own certificate in `verify=`, a chain certificate that connects to
+nothing, the leaf sent twice. Those findings are **report-only**: they appear
+under `PROBLEMS` in [`explain()`](../guide/inspecting-a-certificate.md), where
+whoever is actually looking at the material reads them, rather than as
+warnings a production log learns to scroll past.
+
+A **self-signed** certificate in `verify=` is never a finding at all — that is
+a root CA, and equally the self-signed server certificate a development setup
+pins. Nor is a cross-signed CA in `chain=`: the chain is followed along every
+path, so a second copy of an intermediate under a different root is recognized
+rather than reported as a stray. See
 [](../guide/server-trust.md#combining-trust-sources) and
 [](../guide/loading-certificates.md#intermediates).
 

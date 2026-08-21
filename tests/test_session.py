@@ -75,17 +75,18 @@ def test_from_key_pair_with_chain(client: Signed, ca: Signed) -> None:
 
 def test_from_key_pair_chain_multi_cert_blob(client: Signed, ca: Signed) -> None:
     # A single chain source holding several PEM certs splits into each cert.
-    # This blob also repeats the leaf, which the chain audit reports -- see
-    # tests/test_audit.py.
+    # This blob also repeats the leaf, which the chain audit reports in the
+    # explain() report (chain.duplicate_leaf) -- report-only, since the
+    # duplicate is wasted bytes rather than a failing handshake.
     blob = ca.cert_pem + client.cert_pem
-    with pytest.warns(TLSConfigWarning, match="also in its own chain"):
-        session = PKIClient.from_key_pair(
-            certificate=client.cert_pem,
-            private_key=client.key_pem,
-            chain=blob,
-        )
+    session = PKIClient.from_key_pair(
+        certificate=client.cert_pem,
+        private_key=client.key_pem,
+        chain=blob,
+    )
     with session:
         assert session._material.ca_pems == [ca.cert_pem, client.cert_pem]
+        assert "chain.duplicate_leaf" in {p.code for p in session.explain().problems}
 
 
 def test_wrong_password_raises(client_p12: bytes) -> None:

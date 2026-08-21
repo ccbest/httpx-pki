@@ -514,7 +514,17 @@ def _server_trust(
         return ctx, described
     # Passing cadata is also what keeps create_default_context from mixing in
     # the OS default CAs, which is the whole point of naming a bundle.
-    return ssl.create_default_context(cadata=cadata), described
+    ctx = ssl.create_default_context(cadata=cadata)
+    # Python 3.13's create_default_context sets VERIFY_X509_PARTIAL_CHAIN, so
+    # there an intermediate CA in verify= anchors a chain by itself; set the
+    # same flag on older interpreters so whether that works does not depend on
+    # the Python version. Per-context state, so nothing outside this context is
+    # affected -- which is also why the caller-supplied-context path above must
+    # never do this. VERIFY_X509_STRICT (3.13's other new default) is
+    # deliberately not backported: it makes verification stricter, and rejects
+    # real-world certificates that these interpreters otherwise accept.
+    ctx.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+    return ctx, described
 
 
 def _kind(source: TrustSource) -> str:

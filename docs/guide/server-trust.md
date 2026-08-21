@@ -152,6 +152,38 @@ mix anchors from both sets can fail on Windows while succeeding on Linux and
 macOS. This is truststore's design and nothing httpx-pki can change.
 :::
 
+(intermediate-as-anchor)=
+## An intermediate — or a leaf — as the anchor
+
+The contexts httpx-pki builds from a bundle or directory verify **partial
+chains** — the Python 3.13 default, applied on every version httpx-pki
+supports: any certificate in `verify=` can terminate a chain, not only a
+self-signed root.
+
+That makes two narrower-than-a-root configurations work as written:
+
+- **An intermediate CA** in `verify=` anchors the servers under *it* — and
+  only those. Servers under a sibling intermediate of the same root will not
+  verify, and the root's say over the intermediate — revocation, distrust —
+  is never consulted. Scoping trust to your issuing CA is a legitimate,
+  deliberate setup; trusting the root is the one that keeps working when the
+  PKI adds another intermediate.
+- **A CA-issued leaf** in `verify=` pins exactly that server certificate: it
+  verifies today and stops verifying the day the server renews it.
+
+Neither warns at construction — they work. Both are described in the
+[`explain()`](inspecting-a-certificate.md) report (`trust.intermediate`,
+`trust.leaf`), which is where their trade-offs are spelled out.
+
+A full-chain export — root *and* intermediates in one bundle — is better than
+harmless: the extra intermediates let verification succeed against a server
+that forgets to send its own.
+
+This applies to the contexts httpx-pki builds itself. When `"system"` is in
+the mix, extra anchors are handed to the platform verifier, whose treatment of
+intermediate anchors is its own; a caller-supplied `ssl.SSLContext` keeps
+whatever flags it came with.
+
 ## Pinning certifi
 
 The certifi bundle — the default through 0.7, and still what the original httpx
